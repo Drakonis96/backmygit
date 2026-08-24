@@ -97,11 +97,22 @@ The host port binds to `127.0.0.1` by default. For an Internet-facing deployment
 | `TRANSFER_CONCURRENCY` | `2` | Concurrent rclone upload, restore, and deletion jobs |
 | `TRANSFER_MAX_ATTEMPTS` | `5` | Attempts before a cloud transfer requires manual retry |
 | `RCLONE_TIMEOUT_MS` | `3600000` | Timeout for one rclone operation |
+| `ALLOW_PRIVATE_CLOUD_ENDPOINTS` | `false` | Permit intentionally private HTTP(S) S3 endpoints; leave disabled for Internet-facing deployments |
 | `MIN_FREE_BYTES` | `536870912` | Free-space safety threshold |
 | `GIT_TIMEOUT_MS` | `1800000` | Git command timeout in milliseconds |
 | `APP_VERSION` | `0.2.0` | Version stored in backup metadata |
 
 Application state, the SQLite database, and the automatically generated master key are stored in the `app-data` volume. Actual backups are stored only in `BACKUP_HOST_PATH`. The image runs as UID/GID 1000, with all Linux capabilities dropped and a read-only root filesystem; the backup directory must therefore be writable by UID 1000.
+
+When upgrading a v0.1.0 installation, stop both services and migrate ownership once before starting v0.2.0:
+
+```bash
+docker compose down
+docker compose run --rm --user root app chown -R 1000:1000 /data /backups
+docker compose up -d
+```
+
+Back up `/data` and `BACKUP_HOST_PATH` before the upgrade. Database migrations run automatically and preserve legacy backup records.
 
 ## Cloud destinations
 
@@ -110,6 +121,8 @@ Open **Destinations**, add one or more connections, test them, browse to a remot
 Google Drive, Dropbox, and OneDrive use your own provider OAuth application. Set `PUBLIC_URL` first and copy the exact callback URI shown by BackMyGit into the provider console. Authorization uses a ten-minute, single-use state tied to the current user and session plus PKCE S256. MEGA and S3 credentials are entered directly. Existing rclone remotes use `/config/rclone/rclone.conf`; add a read-only bind mount for that file to both services if needed.
 
 Remote archives are uploaded through a temporary name, verified by downloading their SHA-256 through rclone, and only then published. Retention queues remote deletion separately. Removing only the local copy leaves a verified remote replica recoverable from the Destinations screen.
+
+Custom S3 endpoints are resolved and checked again before every managed rclone operation. Private, loopback, link-local, reserved, and IPv4-mapped addresses are rejected by default. Keep outbound firewall rules in place as an additional defense against DNS rebinding and provider misconfiguration.
 
 ## Internet-facing security
 

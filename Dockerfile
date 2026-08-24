@@ -30,7 +30,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -mod=vendor -tr
 FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS runtime
 ENV NODE_ENV=production PORT=8787 DATA_DIR=/data BACKUP_ROOT=/backups
 WORKDIR /app
-RUN apk add --no-cache git ca-certificates tini tar zstd
+RUN apk add --no-cache git ca-certificates tini zstd
 RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
   && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
 COPY --from=rclone /usr/local/bin/rclone /usr/local/bin/rclone

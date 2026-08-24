@@ -34,11 +34,20 @@ function oauthResultUrl(result: 'success' | 'error'): string {
   return new URL(`/destinations?oauth=${result}`, config.publicUrl!).toString();
 }
 
-function clearExpiredOAuthFlows(): void {
-  const rows = db.prepare('SELECT id FROM oauth_flows WHERE expires_at<=?').all(new Date().toISOString()) as Array<{ id: string }>;
-  for (const row of rows) deleteSecrets('oauth_state', row.id);
-  db.prepare('DELETE FROM oauth_flows WHERE expires_at<=?').run(new Date().toISOString());
+export function clearExpiredOAuthFlows(): void {
+  const now = new Date().toISOString();
+  const rows = db.prepare('SELECT id,connection_id FROM oauth_flows WHERE expires_at<=?').all(now) as Array<{ id: string; connection_id: string }>;
+  for (const row of rows) {
+    deleteSecrets('oauth_state', row.id);
+    deleteSecret('connection', row.connection_id, 'oauth-client');
+  }
+  db.prepare('DELETE FROM oauth_flows WHERE expires_at<=?').run(now);
 }
+
+const oauthCleanupTimer = setInterval(() => {
+  try { clearExpiredOAuthFlows(); } catch (error) { console.error('OAuth flow cleanup failed', error); }
+}, 10 * 60_000);
+oauthCleanupTimer.unref();
 
 async function createOAuthFlow(req: Request, input: {
   connectionId: string;
@@ -69,6 +78,7 @@ async function createOAuthFlow(req: Request, input: {
       );
   } catch (error) {
     deleteSecrets('oauth_state', id);
+    deleteSecret('connection', input.connectionId, 'oauth-client');
     throw error;
   }
   return buildAuthorizationUrl({
@@ -100,6 +110,7 @@ function publicConnection(row: any) {
 router.get('/providers', (_req, res) => res.json({ items: cloudProviders }));
 
 router.get('/oauth/config', (_req, res) => {
+  clearExpiredOAuthFlows();
   let redirectUri: string | undefined;
   try { redirectUri = oauthRedirectUri(); } catch { /* reported as unavailable */ }
   res.json({ available: Boolean(redirectUri), redirectUri });
@@ -149,6 +160,7 @@ router.post('/connections/:id/oauth/start', asyncRoute(async (req, res) => {
 
 router.get('/oauth/callback', asyncRoute(async (req, res) => {
   if (!req.user || !req.sessionId) throw Object.assign(new Error('Authentication required'), { status: 401 });
+  clearExpiredOAuthFlows();
   const query = z.object({
     state: z.string().min(20).max(512),
     code: z.string().min(1).max(8192).optional(),
@@ -183,12 +195,19 @@ router.get('/oauth/callback', asyncRoute(async (req, res) => {
     res.redirect(303, oauthResultUrl('success'));
   } catch (error: any) {
     const detail = String(error?.code || 'OAUTH_FAILED').slice(0, 100);
-    db.prepare("UPDATE cloud_connections SET status='reauthorization_required',last_error=?,updated_at=? WHERE id=?")
-      .run('OAuth authorization failed', new Date().toISOString(), flow.connection_id);
+    const existingConfig = await getSecret('connection', flow.connection_id, 'rclone-config');
+    if (existingConfig) {
+      db.prepare("UPDATE cloud_connections SET status='reauthorization_required',last_error=?,updated_at=? WHERE id=?")
+        .run('OAuth authorization failed', new Date().toISOString(), flow.connection_id);
+    } else {
+      deleteSecrets('connection', flow.connection_id);
+      db.prepare('DELETE FROM cloud_connections WHERE id=?').run(flow.connection_id);
+    }
     audit('cloud.oauth_failed', req, { provider: flow.provider, code: detail }, 'cloud_connection', flow.connection_id);
     res.redirect(303, oauthResultUrl('error'));
   } finally {
     deleteSecrets('oauth_state', flow.id);
+    deleteSecret('connection', flow.connection_id, 'oauth-client');
   }
 }));
 
@@ -270,8 +289,9 @@ router.post('/connections/:id/test', asyncRoute(async (req, res) => {
     res.json({ ok: true, status: 'connected', testedAt });
   } catch (error: any) {
     const detail = String(error?.message || 'Connection test failed').slice(0, 1000);
-    db.prepare("UPDATE cloud_connections SET status='error',last_tested_at=?,last_error=?,updated_at=? WHERE id=?")
-      .run(testedAt, detail, testedAt, connection.id);
+    if (!error?.staleCredentials)
+      db.prepare("UPDATE cloud_connections SET status='error',last_tested_at=?,last_error=?,updated_at=? WHERE id=?")
+        .run(testedAt, detail, testedAt, connection.id);
     audit('cloud.connection_test_failed', req, { error: detail }, 'cloud_connection', connection.id);
     throw Object.assign(new Error('Unable to access the cloud connection'), { status: 422, code: 'CONNECTION_TEST_FAILED' });
   }
@@ -381,7 +401,7 @@ router.put('/assignments/global', (req, res) => {
 
 router.get('/transfers', (req, res) => {
   const limit = z.coerce.number().int().min(1).max(200).default(50).parse(req.query.limit);
-  const rows = db.prepare(`SELECT j.id,j.operation,j.status,j.attempts,j.next_attempt_at,j.bytes_total,j.bytes_transferred,
+  const rows = db.prepare(`SELECT j.id,j.replica_id,j.operation,j.status,j.attempts,j.next_attempt_at,j.bytes_total,j.bytes_transferred,
     j.speed_bps,j.error_code,j.error,j.created_at,j.started_at,j.completed_at,r.status replica_status,r.location,
     r.snapshot_id,t.id target_id,t.name target_name,t.encryption_mode,c.name connection_name,c.provider,
     repo.owner,repo.name repository,br.name branch,s.commit_sha

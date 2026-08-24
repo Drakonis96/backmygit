@@ -6,8 +6,9 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { config } from './config.js';
 import { db } from './db.js';
-import { getSecret, putSecret } from './secrets.js';
+import { getSecret, getSecretWithRevision, putSecretIfRevision } from './secrets.js';
 import { assertRemoteName, normalizeRemoteSubpath, parseRcloneConfig, renderRcloneConfig, type ManagedRcloneConfig } from './rclone-config.js';
+import { validateCloudEndpoint } from './cloud-endpoint.js';
 
 export { assertRemoteName, normalizeRemoteSubpath, remotePath, renderRcloneConfig } from './rclone-config.js';
 export type { ManagedRcloneConfig } from './rclone-config.js';
@@ -49,16 +50,18 @@ async function acquireConnectionLock(connectionId: string): Promise<() => void> 
   throw new Error('Timed out waiting for exclusive access to the cloud connection');
 }
 
-async function managedConfigPath(connectionId: string, remoteName: string): Promise<{ directory: string; file: string }> {
-  const remote = await getSecret<ManagedRcloneConfig>('connection', connectionId, 'rclone-config');
-  if (!remote) throw new Error('Managed rclone credentials are unavailable');
+async function managedConfigPath(connectionId: string, remoteName: string): Promise<{ directory: string; file: string; revision: number }> {
+  const stored = await getSecretWithRevision<ManagedRcloneConfig>('connection', connectionId, 'rclone-config');
+  if (!stored) throw new Error('Managed rclone credentials are unavailable');
+  if (stored.value.type === 's3' && stored.value.fields.endpoint)
+    stored.value.fields.endpoint = await validateCloudEndpoint(stored.value.fields.endpoint);
   const temporaryBase = path.join(config.dataDir, 'tmp');
   await fs.mkdir(temporaryBase, { recursive: true, mode: 0o700 });
   const directory = await fs.mkdtemp(path.join(temporaryBase, 'rclone-'));
   await fs.chmod(directory, 0o700);
   const file = path.join(directory, 'rclone.conf');
-  await fs.writeFile(file, renderRcloneConfig(remoteName, remote), { flag: 'wx', mode: 0o600 });
-  return { directory, file };
+  await fs.writeFile(file, renderRcloneConfig(remoteName, stored.value), { flag: 'wx', mode: 0o600 });
+  return { directory, file, revision: stored.revision };
 }
 
 export async function withRcloneConfig<T>(connection: {
@@ -73,16 +76,25 @@ export async function withRcloneConfig<T>(connection: {
     return callback(config.rcloneExternalConfig);
   }
   const release = await acquireConnectionLock(connection.id);
-  let temporary: { directory: string; file: string } | undefined;
+  let temporary: { directory: string; file: string; revision: number } | undefined;
+  let callbackError: unknown;
   try {
     temporary = await managedConfigPath(connection.id, connection.remote_name);
     return await callback(temporary.file);
+  } catch (error) {
+    callbackError = error;
+    throw error;
   } finally {
     try {
       if (temporary) {
         try {
           const updated = parseRcloneConfig(await fs.readFile(temporary.file, 'utf8'), connection.remote_name);
-          await putSecret('connection', connection.id, 'rclone-config', updated);
+          // OAuth reauthorization may replace the credentials while a long rclone
+          // operation is running. Persist refreshed tokens only if this operation
+          // still owns the secret revision it originally loaded.
+          const persisted = await putSecretIfRevision('connection', connection.id, 'rclone-config', temporary.revision, updated);
+          if (!persisted && callbackError && typeof callbackError === 'object')
+            Object.assign(callbackError, { staleCredentials: true });
         } finally {
           await fs.rm(temporary.directory, { recursive: true, force: true });
         }

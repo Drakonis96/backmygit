@@ -14,6 +14,9 @@ BackMyGit handles repository contents, cloud credentials, OAuth refresh tokens, 
 8. Keep client-side encryption enabled for destinations containing private material.
 9. Generate an encrypted recovery kit, store its passphrase separately, and perform restore drills.
 10. Pin a release image tag or digest and apply new releases promptly.
+11. Restrict worker egress to GitHub and the storage providers you use. Endpoint validation reduces SSRF risk, but network policy is the final boundary against DNS rebinding.
+
+Upgrades from the root-running v0.1.0 image require a one-time ownership migration documented in the main README before the non-root v0.2.0 services are started.
 
 ## Nginx example
 

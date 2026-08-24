@@ -261,13 +261,13 @@ export default function Backups() {
                                 >
                                   <Download />
                                 </a>
-                                <button
+                                {backup.path && <button
                                   className="icon-button"
                                   title={t("copyPath")}
-                                  onClick={() => copy(backup.path)}
+                                  onClick={() => copy(backup.path!)}
                                 >
                                   <Copy />
-                                </button>
+                                </button>}
                                 <button
                                   className="icon-button danger-text"
                                   title={t("delete")}

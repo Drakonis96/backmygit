@@ -262,7 +262,9 @@ router.get("/repositories/:id", (req, res) => {
     .prepare(
       `SELECT ru.*,br.name branch FROM runs ru JOIN branches br ON br.id=ru.branch_id WHERE ru.repository_id=? ORDER BY ru.created_at DESC LIMIT 15`,
     )
-    .all(repositoryId);
+    .all(repositoryId) as any[];
+  if (req.user?.role !== 'admin')
+    for (const run of history) delete run.destination;
   res.json({
     ...row,
     schedule: JSON.parse(row.schedule_json),
@@ -422,7 +424,9 @@ router.get("/backups", (req, res) => {
     JOIN repositories r ON r.id=s.repository_id JOIN branches br ON br.id=s.branch_id
     WHERE ${clauses.join(" AND ")} ORDER BY s.completed_at DESC`,
     )
-    .all(...params);
+    .all(...params) as any[];
+  if (req.user?.role !== 'admin')
+    for (const item of items) delete item.path;
   res.json({ items });
 });
 
@@ -594,7 +598,9 @@ router.get("/history", (req, res) => {
       `SELECT ru.*,r.owner,r.name repository,br.name branch FROM runs ru JOIN repositories r ON r.id=ru.repository_id
     JOIN branches br ON br.id=ru.branch_id WHERE ${where} ORDER BY ru.created_at DESC LIMIT ? OFFSET ?`,
     )
-    .all(...params, pageSize, (page - 1) * pageSize);
+    .all(...params, pageSize, (page - 1) * pageSize) as any[];
+  if (req.user?.role !== 'admin')
+    for (const item of items) delete item.destination;
   res.json({
     items,
     page,
@@ -613,7 +619,14 @@ router.delete("/history", (req, res) => {
 
 router.get(
   "/storage",
-  asyncRoute(async (_req, res) => res.json(await storageStats())),
+  asyncRoute(async (req, res) => {
+    const stats = await storageStats() as any;
+    if (req.user?.role !== 'admin') {
+      delete stats.root;
+      delete stats.hostPath;
+    }
+    res.json(stats);
+  }),
 );
 router.post(
   "/storage/reconcile",

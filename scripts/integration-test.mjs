@@ -3,16 +3,17 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import Database from "better-sqlite3";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 const exec = promisify(execFile);
 const base = process.env.TEST_BASE_URL;
 const backupRoot = process.env.TEST_BACKUP_ROOT;
 const databasePath = process.env.TEST_DATABASE_PATH;
 const remoteRoot = process.env.TEST_REMOTE_ROOT;
-if (!base || !backupRoot || !databasePath || !remoteRoot)
+const rcloneDelayFile = process.env.TEST_RCLONE_DELAY_FILE;
+if (!base || !backupRoot || !databasePath || !remoteRoot || !rcloneDelayFile)
   throw new Error(
-    "TEST_BASE_URL, TEST_BACKUP_ROOT, TEST_DATABASE_PATH and TEST_REMOTE_ROOT are required",
+    "TEST_BASE_URL, TEST_BACKUP_ROOT, TEST_DATABASE_PATH, TEST_REMOTE_ROOT and TEST_RCLONE_DELAY_FILE are required",
   );
 
 const checks = [];
@@ -115,7 +116,10 @@ ok(
 const deniedCallback = await fetch(`${base}/api/cloud/oauth/callback?state=${encodeURIComponent(oauthState)}&error=access_denied`, {
   headers: { Cookie: sessionCookie }, redirect: 'manual',
 });
-ok('OAuth denial is consumed once and redirected without leaking state', deniedCallback.status === 303 && deniedCallback.headers.get('location') === `${base}/destinations?oauth=error`);
+const deniedSecretDatabase = new Database(databasePath, { readonly: true });
+const deniedSecrets = deniedSecretDatabase.prepare("SELECT COUNT(*) count FROM encrypted_secrets WHERE owner_id=? AND purpose='oauth-client'").get(oauth.connection.id).count;
+deniedSecretDatabase.close();
+ok('OAuth denial is consumed once, cleans temporary client secrets, and redirects safely', deniedCallback.status === 303 && deniedCallback.headers.get('location') === `${base}/destinations?oauth=error` && deniedSecrets === 0);
 const replayedCallback = await fetch(`${base}/api/cloud/oauth/callback?state=${encodeURIComponent(oauthState)}&error=access_denied`, {
   headers: { Cookie: sessionCookie }, redirect: 'manual',
 });
@@ -529,7 +533,46 @@ ok(
   reconciliation.discovered === 1 && imported.items.length === 1,
 );
 
-await json(`/backups/${imported.items[0].id}`, "DELETE");
+const raceReplicaId = randomUUID();
+const raceJobId = randomUUID();
+const raceLocation = `race/${imported.items[0].id}.tar.zst`;
+const raceStamp = new Date().toISOString();
+const raceDatabase = new Database(databasePath);
+raceDatabase.prepare(`INSERT INTO backup_replicas(id,snapshot_id,target_id,status,location,required,created_at,updated_at)
+  VALUES(?,?,?,'queued',?,1,?,?)`).run(raceReplicaId, imported.items[0].id, cloudTarget.id, raceLocation, raceStamp, raceStamp);
+raceDatabase.prepare(`INSERT INTO transfer_jobs(id,replica_id,operation,status,attempts,bytes_transferred,created_at,updated_at)
+  VALUES(?,?,'upload','queued',0,0,?,?)`).run(raceJobId, raceReplicaId, raceStamp, raceStamp);
+raceDatabase.close();
+await fs.writeFile(rcloneDelayFile, '4000');
+const raceStartDeadline = Date.now() + 30_000;
+let raceStarted = false;
+while (Date.now() < raceStartDeadline) {
+  const inspectRace = new Database(databasePath, { readonly: true });
+  const state = inspectRace.prepare('SELECT status FROM backup_replicas WHERE id=?').get(raceReplicaId)?.status;
+  inspectRace.close();
+  if (state === 'uploading') { raceStarted = true; break; }
+  await delay(100);
+}
+ok('delayed cloud upload reached the active transfer window', raceStarted);
+await json(`/backups/${imported.items[0].id}?remote=true`, "DELETE");
+await fs.rm(rcloneDelayFile, { force: true });
+let raceDelete;
+const raceDeleteDeadline = Date.now() + 45_000;
+while (Date.now() < raceDeleteDeadline) {
+  const transferList = await request('/cloud/transfers?limit=100');
+  raceDelete = transferList.items.find(item => item.replica_id === raceReplicaId && item.operation === 'delete');
+  if (raceDelete?.status === 'success') break;
+  if (raceDelete?.status === 'failed') throw new Error(raceDelete.error);
+  await delay(200);
+}
+const raceRemotePath = path.join(remoteRoot, cloudTarget.rootPath, ...raceLocation.split('/'));
+let raceRemoteAbsent = false;
+try { await fs.access(raceRemotePath); } catch { raceRemoteAbsent = true; }
+const remoteEntries = await fs.readdir(remoteRoot, { recursive: true });
+ok(
+  'remote deletion intent survives an active upload and removes final and partial objects',
+  raceDelete?.status === 'success' && raceRemoteAbsent && !remoteEntries.some(entry => String(entry).includes(raceJobId)),
+);
 const deletedReplicaDatabase = new Database(databasePath, { readonly: true });
 const deletedReplica = deletedReplicaDatabase.prepare(`SELECT s.id,lr.status FROM snapshots s
   JOIN backup_replicas lr ON lr.snapshot_id=s.id AND lr.target_id='local' WHERE s.id=?`).get(imported.items[0].id);

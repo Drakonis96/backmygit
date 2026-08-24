@@ -8,6 +8,7 @@ import { ensureMasterKey } from './secrets.js';
 import { reconcileFilesystem } from './storage.js';
 import { startWorker, stopWorker } from './worker.js';
 import { startTransferWorker, stopTransferWorker } from './transfer-worker.js';
+import { cleanupInterruptedArtifacts } from './artifacts.js';
 
 if (config.processRole !== 'worker')
   throw new Error('The worker entrypoint requires PROCESS_ROLE=worker');
@@ -19,6 +20,7 @@ const temporaryRoot = path.join(config.backupRoot, '.tmp');
 await fs.mkdir(temporaryRoot, { recursive: true });
 for (const stale of await fs.readdir(temporaryRoot))
   await fs.rm(path.join(temporaryRoot, stale), { recursive: true, force: true });
+await cleanupInterruptedArtifacts();
 await reconcileFilesystem();
 
 try {

@@ -54,21 +54,48 @@ async function removeIfEmpty(directory: string) {
 }
 
 export async function deleteBackupRecord(id: number, deleteRemote = false): Promise<void> {
-  const backup = db.prepare(`SELECT s.id,s.branch_id,lr.id replica_id,lr.location path FROM snapshots s
+  const backup = db.prepare(`SELECT s.id,s.branch_id,s.remote_delete_requested,lr.id replica_id,lr.location path FROM snapshots s
     JOIN backup_replicas lr ON lr.snapshot_id=s.id AND lr.target_id='local' AND lr.status='verified' WHERE s.id=?`).get(id) as any;
   if (!backup) throw Object.assign(new Error('Backup not found'), { status: 404 });
   if (!isWithin(config.backupRoot, backup.path)) throw new Error('Refusing to delete a path outside the backup root');
+  const requestedAt = new Date().toISOString();
+  db.prepare(`UPDATE snapshots SET deletion_requested_at=COALESCE(deletion_requested_at,?),
+    remote_delete_requested=CASE WHEN ?=1 THEN 1 ELSE remote_delete_requested END WHERE id=?`)
+    .run(requestedAt, deleteRemote ? 1 : 0, backup.id);
   await fs.rm(backup.path, { recursive: true, force: true });
   db.prepare("UPDATE backup_replicas SET status='deleted',deleted_at=?,updated_at=? WHERE id=?")
-    .run(new Date().toISOString(), new Date().toISOString(), backup.replica_id);
-  if (deleteRemote) enqueueSnapshotRemoteDeletions(backup.id);
+    .run(requestedAt, requestedAt, backup.replica_id);
+  const remoteRequested = deleteRemote || Boolean(backup.remote_delete_requested);
+  if (remoteRequested) enqueueSnapshotRemoteDeletions(backup.id);
   const branchDir = path.dirname(backup.path);
   await removeIfEmpty(branchDir);
   await removeIfEmpty(path.dirname(branchDir));
 }
 
+export async function replayPendingSnapshotDeletions(): Promise<number> {
+  const rows = db.prepare(`SELECT s.id,s.remote_delete_requested,lr.id replica_id,lr.location path,lr.status
+    FROM snapshots s JOIN backup_replicas lr ON lr.snapshot_id=s.id AND lr.target_id='local'
+    WHERE s.deletion_requested_at IS NOT NULL`).all() as Array<{
+      id: number; remote_delete_requested: number; replica_id: string; path: string; status: string;
+    }>;
+  let replayed = 0;
+  for (const row of rows) {
+    if (row.status !== 'deleted') {
+      if (!isWithin(config.backupRoot, row.path)) throw new Error('Refusing to replay a deletion outside the backup root');
+      await fs.rm(row.path, { recursive: true, force: true });
+      const now = new Date().toISOString();
+      db.prepare("UPDATE backup_replicas SET status='deleted',deleted_at=COALESCE(deleted_at,?),updated_at=? WHERE id=?")
+        .run(now, now, row.replica_id);
+      replayed++;
+    }
+    if (row.remote_delete_requested) enqueueSnapshotRemoteDeletions(row.id);
+  }
+  return replayed;
+}
+
 export async function reconcileFilesystem(): Promise<{ discovered: number }> {
   await fs.mkdir(path.join(config.backupRoot, '.tmp'), { recursive: true });
+  await replayPendingSnapshotDeletions();
   const known = db.prepare(`SELECT lr.id,lr.location path FROM backup_replicas lr
     WHERE lr.target_id='local' AND lr.status='verified'`).all() as Array<{ id: string; path: string }>;
   const forget = db.prepare("UPDATE backup_replicas SET status='deleted',deleted_at=?,updated_at=? WHERE id=?");

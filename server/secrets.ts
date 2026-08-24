@@ -51,9 +51,33 @@ export async function putSecret(ownerType: SecretOwner, ownerId: string, purpose
   const ciphertext = sealPayload(await masterKey(), context(ownerType, ownerId, purpose), value);
   db.prepare(`INSERT INTO encrypted_secrets(id,owner_type,owner_id,purpose,ciphertext,key_version,created_at,updated_at)
     VALUES(?,?,?,?,?,1,?,?) ON CONFLICT(owner_type,owner_id,purpose) DO UPDATE SET
-      ciphertext=excluded.ciphertext,key_version=excluded.key_version,updated_at=excluded.updated_at`).run(
+      ciphertext=excluded.ciphertext,key_version=excluded.key_version,updated_at=excluded.updated_at,revision=encrypted_secrets.revision+1`).run(
         randomUUID(), ownerType, ownerId, purpose, ciphertext, now, now,
       );
+}
+
+export async function getSecretWithRevision<T>(ownerType: SecretOwner, ownerId: string, purpose: string): Promise<{ value: T; revision: number } | undefined> {
+  const row = db.prepare(`SELECT ciphertext,revision FROM encrypted_secrets
+    WHERE owner_type=? AND owner_id=? AND purpose=?`).get(ownerType, ownerId, purpose) as { ciphertext: string; revision: number } | undefined;
+  if (!row) return undefined;
+  return {
+    value: openPayload<T>(await masterKey(), context(ownerType, ownerId, purpose), row.ciphertext),
+    revision: row.revision,
+  };
+}
+
+export async function putSecretIfRevision(
+  ownerType: SecretOwner,
+  ownerId: string,
+  purpose: string,
+  expectedRevision: number,
+  value: unknown,
+): Promise<boolean> {
+  const now = new Date().toISOString();
+  const ciphertext = sealPayload(await masterKey(), context(ownerType, ownerId, purpose), value);
+  return db.prepare(`UPDATE encrypted_secrets SET ciphertext=?,updated_at=?,revision=revision+1
+    WHERE owner_type=? AND owner_id=? AND purpose=? AND revision=?`)
+    .run(ciphertext, now, ownerType, ownerId, purpose, expectedRevision).changes === 1;
 }
 
 export async function getSecret<T>(ownerType: SecretOwner, ownerId: string, purpose: string): Promise<T | undefined> {

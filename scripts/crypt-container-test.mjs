@@ -1,15 +1,19 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
+const distRoot = process.env.BMG_DIST_ROOT || '/app/dist-server';
+const dataRoot = process.env.BMG_CRYPT_DATA_ROOT || '/data';
+const remoteBase = process.env.BMG_CRYPT_REMOTE_ROOT || '/remote-parent/encrypted';
 const [{ db }, secrets, rclone] = await Promise.all([
-  import('/app/dist-server/db.js'),
-  import('/app/dist-server/secrets.js'),
-  import('/app/dist-server/rclone.js'),
+  import(pathToFileURL(path.join(distRoot, 'db.js')).href),
+  import(pathToFileURL(path.join(distRoot, 'secrets.js')).href),
+  import(pathToFileURL(path.join(distRoot, 'rclone.js')).href),
 ]);
 
 const now = new Date().toISOString();
-const source = '/data/crypt-test-source.tar.zst';
+const source = path.join(dataRoot, 'crypt-test-source.tar.zst');
 const plaintext = 'BackMyGit crypt integration payload that must not appear remotely';
 await fs.writeFile(source, plaintext);
 await secrets.ensureMasterKey();
@@ -38,7 +42,6 @@ await rclone.withTargetRcloneConfig(
     if (!stdout.startsWith(expected)) throw new Error('crypt remote did not return the plaintext SHA-256');
   },
 );
-const remoteBase = '/remote-parent/encrypted';
 const entries = await fs.readdir(remoteBase, { recursive: true, withFileTypes: true });
 const files = entries.filter(entry => entry.isFile());
 if (!files.length) throw new Error('crypt remote did not create an encrypted object');

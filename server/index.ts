@@ -13,6 +13,7 @@ import { reconcileFilesystem } from "./storage.js";
 import { startWorker, stopWorker } from "./worker.js";
 import { ensureMasterKey } from './secrets.js';
 import { startTransferWorker, stopTransferWorker } from './transfer-worker.js';
+import { cleanupInterruptedArtifacts } from './artifacts.js';
 
 if (config.processRole === 'worker')
   throw new Error('Use dist-server/worker-entry.js when PROCESS_ROLE=worker');
@@ -30,6 +31,7 @@ if (config.processRole === 'all') {
       force: true,
     });
   }
+  await cleanupInterruptedArtifacts();
   await reconcileFilesystem();
 }
 

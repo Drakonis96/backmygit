@@ -8,6 +8,18 @@ import { isWithin } from './paths.js';
 
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+export async function cleanupInterruptedArtifacts(): Promise<number> {
+  await fs.mkdir(config.artifactRoot, { recursive: true, mode: 0o700 });
+  let removed = 0;
+  for (const entry of await fs.readdir(config.artifactRoot, { withFileTypes: true })) {
+    if (!entry.isFile() || !/\.tar\.zst\.[0-9a-f-]+\.tmp$/i.test(entry.name)) continue;
+    await fs.rm(path.join(config.artifactRoot, entry.name), { force: true });
+    removed++;
+  }
+  db.prepare("UPDATE artifacts SET status='failed',error='Recovered after interrupted artifact creation' WHERE status='creating'").run();
+  return removed;
+}
+
 export interface ReadyArtifact {
   id: string;
   snapshot_id: number;

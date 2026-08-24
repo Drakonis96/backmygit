@@ -66,6 +66,7 @@ const inspect = `
       targetSecretMigration: db.prepare('SELECT name FROM schema_migrations WHERE version=3').get(),
       transferProgressMigration: db.prepare('SELECT name FROM schema_migrations WHERE version=4').get(),
       oauthMigration: db.prepare('SELECT name FROM schema_migrations WHERE version=5').get(),
+      fencingMigration: db.prepare('SELECT name FROM schema_migrations WHERE version=6').get(),
       legacy: db.prepare('SELECT COUNT(*) count FROM backups').get(),
       snapshots: db.prepare('SELECT COUNT(*) count FROM snapshots').get(),
       replica: db.prepare("SELECT snapshot_id,target_id,status,location,size_bytes FROM backup_replicas WHERE id='local-1'").get(),
@@ -85,10 +86,14 @@ const run = backupRoot => JSON.parse(execFileSync(process.execPath, ['--input-ty
 }));
 
 const inspectSecretAndLeases = `
-  Promise.all([import('./dist-server/db.js'), import('./dist-server/secrets.js'), import('./dist-server/worker.js'), import('./dist-server/transfer-queue.js')]).then(async ([{db}, secrets, worker, transfers]) => {
+  Promise.all([import('./dist-server/db.js'), import('./dist-server/secrets.js'), import('./dist-server/worker.js'), import('./dist-server/transfer-queue.js'), import('./dist-server/storage.js')]).then(async ([{db}, secrets, worker, transfers, storage]) => {
     await secrets.ensureMasterKey();
     await secrets.putSecret('connection', 'connection-1', 'rclone-config', { password: 'must-never-appear-in-sqlite' });
     const opened = await secrets.getSecret('connection', 'connection-1', 'rclone-config');
+    const firstRevision = await secrets.getSecretWithRevision('connection', 'connection-1', 'rclone-config');
+    await secrets.putSecret('connection', 'connection-1', 'rclone-config', { password: 'new-oauth-token' });
+    const staleSecretWrite = await secrets.putSecretIfRevision('connection', 'connection-1', 'rclone-config', firstRevision.revision, { password: 'stale-token' });
+    const currentSecret = await secrets.getSecret('connection', 'connection-1', 'rclone-config');
     const keyStat = await import('node:fs/promises').then(fs => fs.stat(process.env.BACKMYGIT_TEST_KEY_PATH));
     const now = new Date();
     db.prepare("INSERT INTO branches(id,repository_id,name,created_at) VALUES(2,1,'expired',?)").run(now.toISOString());
@@ -101,14 +106,25 @@ const inspectSecretAndLeases = `
     db.prepare("INSERT INTO cloud_connections(id,name,provider,remote_name,auth_type,status,managed,created_at,updated_at) VALUES('retry-connection','Retry','external','retry_remote','external','connected',0,?,?)").run(stamp, stamp);
     db.prepare("INSERT INTO storage_targets(id,connection_id,kind,name,root_path,encryption_mode,created_at,updated_at) VALUES('retry-target','retry-connection','rclone','Retry target','BackMyGit','none',?,?)").run(stamp, stamp);
     db.prepare("INSERT INTO backup_replicas(id,snapshot_id,target_id,status,location,created_at,updated_at) VALUES('retry-replica',1,'retry-target','uploading','retry.tar.zst',?,?)").run(stamp, stamp);
-    db.prepare("INSERT INTO transfer_jobs(id,replica_id,operation,status,attempts,bytes_transferred,created_at,updated_at) VALUES('retry-job','retry-replica','upload','running',1,0,?,?)").run(stamp, stamp);
-    const retryable = transfers.failTransfer('retry-job', 'retry-replica', new Error('quota exceeded'));
-    db.prepare("UPDATE transfer_jobs SET status='running',attempts=5 WHERE id='retry-job'").run();
+    db.prepare("INSERT INTO transfer_jobs(id,replica_id,operation,status,attempts,bytes_transferred,created_at,updated_at,claimed_by) VALUES('retry-job','retry-replica','upload','running',1,0,?,?,'worker-a')").run(stamp, stamp);
+    db.prepare("INSERT INTO transfer_attempts(job_id,attempt,started_at) VALUES('retry-job',1,?)").run(stamp);
+    const retryable = transfers.failTransfer('retry-job', 'retry-replica', 'worker-a', 1, new Error('quota exceeded'));
+    db.prepare("UPDATE transfer_jobs SET status='running',attempts=5,claimed_by='worker-b' WHERE id='retry-job'").run();
+    db.prepare("INSERT INTO transfer_attempts(job_id,attempt,started_at) VALUES('retry-job',5,?)").run(stamp);
     db.prepare("UPDATE backup_replicas SET status='uploading' WHERE id='retry-replica'").run();
-    const terminal = transfers.failTransfer('retry-job', 'retry-replica', new Error('connection timed out'));
+    const staleCompletion = transfers.completeTransfer('retry-job', 'retry-replica', 'worker-a', 1, { size_bytes: 5, sha256: 'b'.repeat(64) });
+    const statusAfterStaleCompletion = db.prepare("SELECT status,claimed_by,attempts FROM transfer_jobs WHERE id='retry-job'").get();
+    const terminal = transfers.failTransfer('retry-job', 'retry-replica', 'worker-b', 5, new Error('connection timed out'));
+    const crashPath = (await import('node:path')).join(process.env.BACKUP_ROOT, 'crash-delete');
+    await import('node:fs/promises').then(fs => fs.mkdir(crashPath, { recursive: true }));
+    db.prepare("INSERT INTO snapshots(id,repository_id,branch_id,commit_sha,started_at,completed_at,duration_ms,origin,status,created_at,deletion_requested_at,remote_delete_requested) VALUES(2,1,1,?,?,?,1,'manual','success',?,?,1)").run('c'.repeat(40), stamp, stamp, stamp, stamp);
+    db.prepare("INSERT INTO backup_replicas(id,snapshot_id,target_id,status,location,size_bytes,sha256,required,verified_at,created_at,updated_at) VALUES('crash-local',2,'local','verified',?,1,?,1,?,?,?)").run(crashPath, 'c'.repeat(40), stamp, stamp, stamp);
+    db.prepare("INSERT INTO backup_replicas(id,snapshot_id,target_id,status,location,size_bytes,sha256,required,verified_at,created_at,updated_at) VALUES('crash-remote',2,'retry-target','verified','crash.tar.zst',1,?,1,?,?,?)").run('d'.repeat(64), stamp, stamp, stamp);
+    const replayedDeletion = await storage.replayPendingSnapshotDeletions();
+    const crashDeletion = db.prepare("SELECT lr.status local_status,rr.deletion_requested_at,(SELECT status FROM transfer_jobs WHERE replica_id='crash-remote' AND operation='delete') delete_status FROM backup_replicas lr JOIN backup_replicas rr ON rr.snapshot_id=lr.snapshot_id AND rr.id='crash-remote' WHERE lr.id='crash-local'").get();
     const ciphertext = db.prepare("SELECT ciphertext FROM encrypted_secrets WHERE owner_id='connection-1'").get().ciphertext;
     const states = db.prepare("SELECT id,status,claimed_by FROM runs WHERE id IN ('expired-run','leased-run') ORDER BY id").all();
-    process.stdout.write(JSON.stringify({ opened, ciphertext, keyMode: keyStat.mode & 511, recovered, states, retryable, terminal }));
+    process.stdout.write(JSON.stringify({ opened, staleSecretWrite, currentSecret, ciphertext, keyMode: keyStat.mode & 511, recovered, states, retryable, staleCompletion, statusAfterStaleCompletion, terminal, replayedDeletion, crashDeletion }));
     db.close();
   });
 `;
@@ -132,6 +148,7 @@ try {
   if (migrated.targetSecretMigration?.name !== 'target-scoped secrets') throw new Error('target secret migration was not recorded');
   if (migrated.transferProgressMigration?.name !== 'transfer progress and artifact uniqueness') throw new Error('transfer progress migration was not recorded');
   if (migrated.oauthMigration?.name !== 'oauth flows and connection locks') throw new Error('OAuth migration was not recorded');
+  if (migrated.fencingMigration?.name !== 'durable deletion intent and transfer fencing') throw new Error('transfer fencing migration was not recorded');
   if (migrated.legacy.count !== 1 || migrated.snapshots.count !== 1) throw new Error('legacy snapshot was not migrated exactly once');
   if (migrated.replica?.status !== 'verified' || migrated.replica?.target_id !== 'local' || migrated.replica?.size_bytes !== 1000)
     throw new Error('local replica migration is invalid');
@@ -147,6 +164,8 @@ try {
   const secured = securityRun();
   if (secured.opened?.password !== 'must-never-appear-in-sqlite' || secured.ciphertext.includes('must-never-appear-in-sqlite'))
     throw new Error('encrypted secret storage is invalid');
+  if (secured.staleSecretWrite || secured.currentSecret?.password !== 'new-oauth-token')
+    throw new Error('stale secret revisions can overwrite reauthorized credentials');
   if (secured.keyMode !== 0o600) throw new Error('master key permissions are not 0600');
   if (secured.recovered !== 1 || secured.states[0]?.id !== 'expired-run' || secured.states[0]?.status !== 'queued' || secured.states[0]?.claimed_by !== null)
     throw new Error('expired run lease was not recovered');
@@ -156,6 +175,10 @@ try {
     throw new Error('retryable transfer failure did not receive classified backoff');
   if (!secured.terminal?.terminal || secured.terminal?.code !== 'timeout' || secured.terminal?.nextAttemptAt)
     throw new Error('terminal transfer failure did not stop at the configured attempt limit');
+  if (secured.staleCompletion?.accepted || secured.statusAfterStaleCompletion?.status !== 'running' || secured.statusAfterStaleCompletion?.claimed_by !== 'worker-b' || secured.statusAfterStaleCompletion?.attempts !== 5)
+    throw new Error('a stale transfer worker can overwrite a newer claim');
+  if (secured.replayedDeletion !== 1 || secured.crashDeletion?.local_status !== 'deleted' || !secured.crashDeletion?.deletion_requested_at || secured.crashDeletion?.delete_status !== 'queued')
+    throw new Error('durable deletion intent was not replayed after an injected crash boundary');
   console.log('Migration test passed: legacy data preserved, migrated once, constraints valid, local root refreshed.');
   console.log('Worker security test passed: encrypted secrets, 0600 master key, and selective lease recovery.');
 } finally {

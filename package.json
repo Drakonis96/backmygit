@@ -17,6 +17,7 @@
     "test:integration": "npm run build && node scripts/run-integration.mjs",
     "test:migration": "npm run build && node scripts/migration-test.mjs",
     "test:security": "npm run build && node scripts/security-test.mjs",
+    "test:crypt:container": "node scripts/run-crypt-container.mjs",
     "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit"
   },

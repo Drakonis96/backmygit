@@ -332,6 +332,15 @@ migrate(5, 'oauth flows and connection locks', () => {
   `);
 });
 
+migrate(6, 'durable deletion intent and transfer fencing', () => {
+  db.exec(`
+    ALTER TABLE snapshots ADD COLUMN deletion_requested_at TEXT;
+    ALTER TABLE snapshots ADD COLUMN remote_delete_requested INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE backup_replicas ADD COLUMN deletion_requested_at TEXT;
+    ALTER TABLE encrypted_secrets ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+  `);
+});
+
 // The local target is deployment configuration, not historical state. Keep it in
 // sync when an existing database is mounted at a different backup path.
 db.prepare("UPDATE storage_targets SET root_path=?,updated_at=? WHERE id='local'")

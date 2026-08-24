@@ -10,6 +10,7 @@ await fs.mkdir(dataDir); await fs.mkdir(backupRoot);
 const fakeRclone = path.join(root, 'rclone');
 const externalRcloneConfig = path.join(root, 'rclone.conf');
 const fakeRemoteRoot = path.join(root, 'remote');
+const fakeRcloneDelayFile = path.join(root, 'delay-copy');
 await fs.mkdir(fakeRemoteRoot);
 await fs.writeFile(fakeRclone, `#!/usr/bin/env node
 const fs = require('node:fs');
@@ -21,6 +22,7 @@ const commandIndex = args.findIndex(arg => commands.includes(arg));
 const command = args[commandIndex];
 const rest = args.slice(commandIndex + 1);
 const remoteRoot = ${JSON.stringify(fakeRemoteRoot)};
+const delayFile = ${JSON.stringify(fakeRcloneDelayFile)};
 function remoteFile(spec) {
   const separator = spec.indexOf(':');
   const relative = spec.slice(separator + 1).split('/').filter(Boolean);
@@ -34,6 +36,10 @@ else if (command === 'obscure') {
   process.stdin.on('data', chunk => { value += chunk; });
   process.stdin.on('end', () => process.stdout.write('obscured-' + value.trim() + '\\n'));
 } else if (command === 'copyto') {
+  if (fs.existsSync(delayFile)) {
+    const milliseconds = Math.max(0, Number(fs.readFileSync(delayFile, 'utf8')) || 0);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+  }
   const source = rest[0].includes(':') ? remoteFile(rest[0]) : rest[0];
   const destination = rest[1].includes(':') ? remoteFile(rest[1]) : rest[1];
   fs.mkdirSync(path.dirname(destination), { recursive: true });
@@ -98,7 +104,7 @@ try {
   if (!workerLog.includes('worker started')) throw new Error(`Integration worker did not start:\n${workerLog}`);
   const test = spawn(process.execPath, ['scripts/integration-test.mjs'], {
     cwd: process.cwd(),
-    env: { ...process.env, TEST_BASE_URL: base, TEST_BACKUP_ROOT: backupRoot, TEST_DATABASE_PATH: path.join(dataDir, 'backmygit.sqlite'), TEST_REMOTE_ROOT: fakeRemoteRoot },
+    env: { ...process.env, TEST_BASE_URL: base, TEST_BACKUP_ROOT: backupRoot, TEST_DATABASE_PATH: path.join(dataDir, 'backmygit.sqlite'), TEST_REMOTE_ROOT: fakeRemoteRoot, TEST_RCLONE_DELAY_FILE: fakeRcloneDelayFile },
     stdio: 'inherit',
   });
   const exitCode = await new Promise(resolve => test.once('exit', resolve));

@@ -115,10 +115,12 @@ try {
   };
   const viewer = await loginAs('viewer');
   const viewerRead = await fetch(`${base}/api/settings`, { headers: headers({ Cookie: viewer.cookie }) });
+  const viewerStorage = await (await fetch(`${base}/api/storage`, { headers: headers({ Cookie: viewer.cookie }) })).json();
   const viewerWrite = await fetch(`${base}/api/storage/reconcile`, {
     method: 'POST', headers: headers({ Cookie: viewer.cookie, 'Content-Type': 'application/json', Origin: `https://${host}`, 'X-CSRF-Token': viewer.body.csrfToken }), body: '{}',
   });
   assert(viewerRead.status === 200 && viewerWrite.status === 403, 'viewer role is read-only');
+  assert(!('root' in viewerStorage) && !('hostPath' in viewerStorage), 'viewer responses do not expose host filesystem paths');
   const operator = await loginAs('operator');
   const operatorAllowed = await fetch(`${base}/api/storage/reconcile`, {
     method: 'POST', headers: headers({ Cookie: operator.cookie, 'Content-Type': 'application/json', Origin: `https://${host}`, 'X-CSRF-Token': operator.body.csrfToken }), body: '{}',

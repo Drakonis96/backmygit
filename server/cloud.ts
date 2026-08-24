@@ -1,8 +1,6 @@
-import dns from 'node:dns/promises';
-import net from 'node:net';
-import { config } from './config.js';
 import { db } from './db.js';
 import { normalizeRemoteSubpath, remotePath, runRclone, withRcloneConfig } from './rclone.js';
+export { validateCloudEndpoint } from './cloud-endpoint.js';
 
 export const cloudProviders = [
   { id: 'drive', name: 'Google Drive', authModes: ['managed_oauth'] },
@@ -12,36 +10,6 @@ export const cloudProviders = [
   { id: 's3', name: 'S3 compatible', authModes: ['managed_credentials'] },
   { id: 'external', name: 'Existing rclone remote', authModes: ['external'] },
 ] as const;
-
-function privateIp(address: string): boolean {
-  if (net.isIPv4(address)) {
-    const [a, b] = address.split('.').map(Number);
-    return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) ||
-      (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
-  }
-  const normalized = address.toLowerCase();
-  return normalized === '::1' || normalized === '::' || normalized.startsWith('fc') ||
-    normalized.startsWith('fd') || normalized.startsWith('fe8') || normalized.startsWith('fe9') ||
-    normalized.startsWith('fea') || normalized.startsWith('feb') || normalized.startsWith('::ffff:127.') ||
-    normalized.startsWith('::ffff:169.254.');
-}
-
-export async function validateCloudEndpoint(value: string): Promise<string> {
-  const endpoint = new URL(value);
-  if (endpoint.username || endpoint.password || endpoint.pathname !== '/' || endpoint.search || endpoint.hash)
-    throw new Error('Cloud endpoints must be origins without credentials, paths, query strings, or fragments');
-  if (!config.allowPrivateCloudEndpoints && endpoint.protocol !== 'https:')
-    throw new Error('Cloud endpoints must use HTTPS');
-  if (!['http:', 'https:'].includes(endpoint.protocol)) throw new Error('Cloud endpoint protocol is not supported');
-  if (!config.allowPrivateCloudEndpoints) {
-    if (endpoint.hostname === 'localhost' || endpoint.hostname.endsWith('.localhost') || endpoint.hostname.endsWith('.local'))
-      throw new Error('Private cloud endpoints are disabled');
-    const addresses = await dns.lookup(endpoint.hostname, { all: true, verbatim: true });
-    if (!addresses.length || addresses.some(item => privateIp(item.address)))
-      throw new Error('Private cloud endpoints are disabled');
-  }
-  return endpoint.origin;
-}
 
 export function getConnection(id: string): any {
   const connection = db.prepare('SELECT * FROM cloud_connections WHERE id=?').get(id);
