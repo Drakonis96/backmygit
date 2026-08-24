@@ -113,10 +113,10 @@ router.get(
         `SELECT
     (SELECT COUNT(*) FROM repositories WHERE enabled=1) protectedRepositories,
     (SELECT COUNT(*) FROM branches WHERE enabled=1 AND configured=1) protectedBranches,
-    (SELECT COUNT(*) FROM backups WHERE status='success') totalBackups,
+    (SELECT COUNT(*) FROM backup_replicas WHERE target_id='local' AND status='verified') totalBackups,
     (SELECT COUNT(*) FROM runs WHERE status='success') successfulBackups,
     (SELECT COUNT(*) FROM runs WHERE status='failed') failedBackups,
-    (SELECT COALESCE(SUM(size_bytes),0) FROM backups WHERE status='success') totalBytes,
+    (SELECT COALESCE(SUM(size_bytes),0) FROM backup_replicas WHERE target_id='local' AND status='verified') totalBytes,
     (SELECT MAX(completed_at) FROM runs WHERE status='success') lastCompleted,
     (SELECT MIN(next_run_at) FROM branches WHERE enabled=1 AND configured=1) nextScheduled`,
       )
@@ -144,9 +144,9 @@ router.get("/repositories", (_req, res) => {
     .prepare(
       `SELECT r.*,
     (SELECT COUNT(*) FROM branches br WHERE br.repository_id=r.id AND br.configured=1) branchCount,
-    (SELECT COUNT(*) FROM backups b WHERE b.repository_id=r.id) backupCount,
-    (SELECT COALESCE(SUM(b.size_bytes),0) FROM backups b WHERE b.repository_id=r.id) sizeBytes,
-    (SELECT MAX(b.completed_at) FROM backups b WHERE b.repository_id=r.id) lastBackup,
+    (SELECT COUNT(*) FROM snapshots s JOIN backup_replicas lr ON lr.snapshot_id=s.id AND lr.target_id='local' AND lr.status='verified' WHERE s.repository_id=r.id) backupCount,
+    (SELECT COALESCE(SUM(lr.size_bytes),0) FROM snapshots s JOIN backup_replicas lr ON lr.snapshot_id=s.id AND lr.target_id='local' AND lr.status='verified' WHERE s.repository_id=r.id) sizeBytes,
+    (SELECT MAX(s.completed_at) FROM snapshots s JOIN backup_replicas lr ON lr.snapshot_id=s.id AND lr.target_id='local' AND lr.status='verified' WHERE s.repository_id=r.id) lastBackup,
     (SELECT MIN(br.next_run_at) FROM branches br WHERE br.repository_id=r.id AND br.enabled=1 AND br.configured=1) nextBackup,
     (SELECT status FROM runs ru WHERE ru.repository_id=r.id ORDER BY ru.created_at DESC LIMIT 1) lastStatus
     FROM repositories r ORDER BY r.owner COLLATE NOCASE,r.name COLLATE NOCASE`,
@@ -235,9 +235,9 @@ router.get("/repositories/:id", (req, res) => {
   const row = db
     .prepare(
       `SELECT r.*,
-    (SELECT COUNT(*) FROM backups b WHERE b.repository_id=r.id) backupCount,
-    (SELECT COALESCE(SUM(b.size_bytes),0) FROM backups b WHERE b.repository_id=r.id) sizeBytes,
-    (SELECT MAX(b.completed_at) FROM backups b WHERE b.repository_id=r.id) lastBackup,
+    (SELECT COUNT(*) FROM snapshots s JOIN backup_replicas lr ON lr.snapshot_id=s.id AND lr.target_id='local' AND lr.status='verified' WHERE s.repository_id=r.id) backupCount,
+    (SELECT COALESCE(SUM(lr.size_bytes),0) FROM snapshots s JOIN backup_replicas lr ON lr.snapshot_id=s.id AND lr.target_id='local' AND lr.status='verified' WHERE s.repository_id=r.id) sizeBytes,
+    (SELECT MAX(s.completed_at) FROM snapshots s JOIN backup_replicas lr ON lr.snapshot_id=s.id AND lr.target_id='local' AND lr.status='verified' WHERE s.repository_id=r.id) lastBackup,
     (SELECT MIN(br.next_run_at) FROM branches br WHERE br.repository_id=r.id AND br.enabled=1 AND br.configured=1) nextBackup
     FROM repositories r WHERE r.id=?`,
     )
@@ -246,9 +246,12 @@ router.get("/repositories/:id", (req, res) => {
     throw Object.assign(new Error("Repository not found"), { status: 404 });
   const branches = db
     .prepare(
-      `SELECT br.*,COUNT(b.id) backupCount,COALESCE(SUM(b.size_bytes),0) sizeBytes,MAX(b.completed_at) lastBackup,
+      `SELECT br.*,
+    (SELECT COUNT(*) FROM snapshots s JOIN backup_replicas lr ON lr.snapshot_id=s.id AND lr.target_id='local' AND lr.status='verified' WHERE s.branch_id=br.id) backupCount,
+    (SELECT COALESCE(SUM(lr.size_bytes),0) FROM snapshots s JOIN backup_replicas lr ON lr.snapshot_id=s.id AND lr.target_id='local' AND lr.status='verified' WHERE s.branch_id=br.id) sizeBytes,
+    (SELECT MAX(s.completed_at) FROM snapshots s JOIN backup_replicas lr ON lr.snapshot_id=s.id AND lr.target_id='local' AND lr.status='verified' WHERE s.branch_id=br.id) lastBackup,
     (SELECT status FROM runs ru WHERE ru.branch_id=br.id ORDER BY ru.created_at DESC LIMIT 1) lastStatus
-    FROM branches br LEFT JOIN backups b ON b.branch_id=br.id WHERE br.repository_id=? GROUP BY br.id ORDER BY br.configured DESC,br.name`,
+    FROM branches br WHERE br.repository_id=? ORDER BY br.configured DESC,br.name`,
     )
     .all(repositoryId) as any[];
   const history = db
@@ -398,10 +401,10 @@ router.post("/backups/run", (req, res) => {
 });
 
 router.get("/backups", (req, res) => {
-  const clauses: string[] = ["b.status='success'"];
+  const clauses: string[] = ["s.status='success'", "lr.target_id='local'", "lr.status='verified'"];
   const params: any[] = [];
   if (req.query.repositoryId) {
-    clauses.push("b.repository_id=?");
+    clauses.push("s.repository_id=?");
     params.push(id(String(req.query.repositoryId)));
   }
   if (req.query.branch) {
@@ -410,8 +413,10 @@ router.get("/backups", (req, res) => {
   }
   const items = db
     .prepare(
-      `SELECT b.*,r.owner,r.name repository,br.name branch FROM backups b JOIN repositories r ON r.id=b.repository_id
-    JOIN branches br ON br.id=b.branch_id WHERE ${clauses.join(" AND ")} ORDER BY b.completed_at DESC`,
+      `SELECT s.*,lr.location path,lr.size_bytes,r.owner,r.name repository,br.name branch
+    FROM snapshots s JOIN backup_replicas lr ON lr.snapshot_id=s.id
+    JOIN repositories r ON r.id=s.repository_id JOIN branches br ON br.id=s.branch_id
+    WHERE ${clauses.join(" AND ")} ORDER BY s.completed_at DESC`,
     )
     .all(...params);
   res.json({ items });
@@ -421,7 +426,8 @@ router.get(
   "/backups/:id/contents",
   asyncRoute(async (req, res) => {
     const backup = db
-      .prepare("SELECT path FROM backups WHERE id=?")
+      .prepare(`SELECT lr.location path FROM snapshots s JOIN backup_replicas lr
+        ON lr.snapshot_id=s.id AND lr.target_id='local' AND lr.status='verified' WHERE s.id=?`)
       .get(id(String(req.params.id))) as any;
     if (!backup)
       throw Object.assign(new Error("Backup not found"), { status: 404 });
@@ -465,7 +471,9 @@ router.get(
   asyncRoute(async (req, res) => {
     const backup = db
       .prepare(
-        `SELECT b.path,r.owner,r.name repository,br.name branch FROM backups b JOIN repositories r ON r.id=b.repository_id JOIN branches br ON br.id=b.branch_id WHERE b.id=?`,
+        `SELECT lr.location path,r.owner,r.name repository,br.name branch FROM snapshots s
+        JOIN backup_replicas lr ON lr.snapshot_id=s.id AND lr.target_id='local' AND lr.status='verified'
+        JOIN repositories r ON r.id=s.repository_id JOIN branches br ON br.id=s.branch_id WHERE s.id=?`,
       )
       .get(id(String(req.params.id))) as any;
     if (!backup)
@@ -486,7 +494,8 @@ router.get(
   "/backups/:id/file",
   asyncRoute(async (req, res) => {
     const backup = db
-      .prepare("SELECT path FROM backups WHERE id=?")
+      .prepare(`SELECT lr.location path FROM snapshots s JOIN backup_replicas lr
+        ON lr.snapshot_id=s.id AND lr.target_id='local' AND lr.status='verified' WHERE s.id=?`)
       .get(id(String(req.params.id))) as any;
     if (!backup)
       throw Object.assign(new Error("Backup not found"), { status: 404 });

@@ -8,7 +8,9 @@ export async function applyRetention(branchId: number): Promise<number> {
   if (!context) return 0;
   const retention = effectiveRetention({ retention_json: context.repository_retention }, context);
   if (retention.mode === 'forever') return 0;
-  const backups = db.prepare("SELECT * FROM backups WHERE branch_id=? AND status='success' ORDER BY completed_at DESC").all(branchId) as any[];
+  const backups = db.prepare(`SELECT s.*,lr.location path FROM snapshots s JOIN backup_replicas lr
+    ON lr.snapshot_id=s.id AND lr.target_id='local' AND lr.status='verified'
+    WHERE s.branch_id=? AND s.status='success' ORDER BY s.completed_at DESC`).all(branchId) as any[];
   if (backups.length <= 1) return 0;
   const protectedCount = Math.max(1, retention.minimumToKeep || 0);
   let cutoff: DateTime | null = null;

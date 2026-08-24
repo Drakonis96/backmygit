@@ -268,6 +268,16 @@ ok(
   "retention against real filesystem",
   backupList.items.length === 1 && backupList.items[0].id !== 1,
 );
+const retentionDatabase = new Database(databasePath, { readonly: true });
+const retainedSnapshots = retentionDatabase.prepare("SELECT COUNT(*) count FROM snapshots").get().count;
+const localReplicaStates = retentionDatabase.prepare("SELECT status,COUNT(*) count FROM backup_replicas WHERE target_id='local' GROUP BY status").all();
+retentionDatabase.close();
+ok(
+  "retention preserves canonical snapshot history",
+  retainedSnapshots === 2 &&
+    localReplicaStates.some((row) => row.status === "deleted" && row.count === 1) &&
+    localReplicaStates.some((row) => row.status === "verified" && row.count === 1),
+);
 try {
   await fs.access(firstRun.destination);
   throw new Error("old backup still exists");
@@ -360,6 +370,16 @@ const imported = await request(
 ok(
   "filesystem reconciliation",
   reconciliation.discovered === 1 && imported.items.length === 1,
+);
+
+await json(`/backups/${imported.items[0].id}`, "DELETE");
+const deletedReplicaDatabase = new Database(databasePath, { readonly: true });
+const deletedReplica = deletedReplicaDatabase.prepare(`SELECT s.id,lr.status FROM snapshots s
+  JOIN backup_replicas lr ON lr.snapshot_id=s.id AND lr.target_id='local' WHERE s.id=?`).get(imported.items[0].id);
+deletedReplicaDatabase.close();
+ok(
+  "local deletion preserves canonical snapshot",
+  deletedReplica?.id === imported.items[0].id && deletedReplica?.status === "deleted",
 );
 
 await json(`/repositories/${recreated.items[0].id}?deleteFiles=true`, "DELETE");

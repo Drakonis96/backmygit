@@ -94,7 +94,170 @@ CREATE TABLE IF NOT EXISTS audit_events (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS audit_events_created_idx ON audit_events(created_at DESC);
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  applied_at TEXT NOT NULL
+);
 `);
+
+function migrate(version: number, name: string, migration: () => void): void {
+  if (db.prepare('SELECT 1 FROM schema_migrations WHERE version=?').get(version)) return;
+  db.transaction(() => {
+    migration();
+    db.prepare('INSERT INTO schema_migrations(version,name,applied_at) VALUES(?,?,?)')
+      .run(version, name, new Date().toISOString());
+  })();
+}
+
+migrate(1, 'multi-location snapshots', () => {
+  db.exec(`
+    CREATE TABLE cloud_connections (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      remote_name TEXT NOT NULL UNIQUE,
+      auth_type TEXT NOT NULL CHECK(auth_type IN ('external','managed_oauth','managed_credentials')),
+      status TEXT NOT NULL CHECK(status IN ('pending','connected','reauthorization_required','disabled','error')),
+      managed INTEGER NOT NULL DEFAULT 1,
+      config_json TEXT NOT NULL DEFAULT '{}',
+      last_tested_at TEXT,
+      last_error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE storage_targets (
+      id TEXT PRIMARY KEY,
+      connection_id TEXT REFERENCES cloud_connections(id) ON DELETE RESTRICT,
+      kind TEXT NOT NULL CHECK(kind IN ('local','rclone')),
+      name TEXT NOT NULL,
+      root_path TEXT NOT NULL,
+      encryption_mode TEXT NOT NULL CHECK(encryption_mode IN ('none','crypt')),
+      enabled INTEGER NOT NULL DEFAULT 1,
+      config_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      CHECK((kind='local' AND connection_id IS NULL) OR (kind='rclone' AND connection_id IS NOT NULL))
+    );
+    CREATE TABLE target_assignments (
+      id TEXT PRIMARY KEY,
+      target_id TEXT NOT NULL REFERENCES storage_targets(id) ON DELETE CASCADE,
+      scope_type TEXT NOT NULL CHECK(scope_type IN ('global','repository','branch')),
+      scope_key TEXT NOT NULL,
+      repository_id INTEGER REFERENCES repositories(id) ON DELETE CASCADE,
+      branch_id INTEGER REFERENCES branches(id) ON DELETE CASCADE,
+      required INTEGER NOT NULL DEFAULT 1,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      retention_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(target_id,scope_type,scope_key),
+      CHECK(
+        (scope_type='global' AND scope_key='global' AND repository_id IS NULL AND branch_id IS NULL) OR
+        (scope_type='repository' AND repository_id IS NOT NULL AND branch_id IS NULL) OR
+        (scope_type='branch' AND branch_id IS NOT NULL)
+      )
+    );
+    CREATE TABLE snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      repository_id INTEGER NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+      branch_id INTEGER NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
+      run_id TEXT REFERENCES runs(id) ON DELETE SET NULL,
+      commit_sha TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      completed_at TEXT NOT NULL,
+      duration_ms INTEGER NOT NULL,
+      origin TEXT NOT NULL CHECK(origin IN ('manual','automatic')),
+      status TEXT NOT NULL DEFAULT 'success' CHECK(status IN ('success','invalid')),
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX snapshots_completed_idx ON snapshots(completed_at DESC);
+    CREATE INDEX snapshots_branch_idx ON snapshots(branch_id,completed_at DESC);
+    CREATE TABLE artifacts (
+      id TEXT PRIMARY KEY,
+      snapshot_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+      path TEXT NOT NULL UNIQUE,
+      format TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('queued','creating','ready','failed','deleted')),
+      size_bytes INTEGER,
+      sha256 TEXT,
+      manifest_json TEXT NOT NULL DEFAULT '{}',
+      error TEXT,
+      created_at TEXT NOT NULL,
+      completed_at TEXT,
+      deleted_at TEXT
+    );
+    CREATE INDEX artifacts_snapshot_idx ON artifacts(snapshot_id);
+    CREATE TABLE backup_replicas (
+      id TEXT PRIMARY KEY,
+      snapshot_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+      target_id TEXT NOT NULL REFERENCES storage_targets(id) ON DELETE RESTRICT,
+      status TEXT NOT NULL CHECK(status IN ('queued','packing','uploading','verifying','verified','retry_wait','failed','deleting','deleted')),
+      location TEXT NOT NULL,
+      size_bytes INTEGER,
+      sha256 TEXT,
+      remote_object_id TEXT,
+      required INTEGER NOT NULL DEFAULT 1,
+      verified_at TEXT,
+      last_error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      deleted_at TEXT,
+      UNIQUE(snapshot_id,target_id)
+    );
+    CREATE INDEX replicas_status_idx ON backup_replicas(status);
+    CREATE INDEX replicas_target_idx ON backup_replicas(target_id,status);
+    CREATE UNIQUE INDEX active_replica_location_idx ON backup_replicas(target_id,location)
+      WHERE status != 'deleted';
+    CREATE TABLE transfer_jobs (
+      id TEXT PRIMARY KEY,
+      replica_id TEXT NOT NULL REFERENCES backup_replicas(id) ON DELETE CASCADE,
+      operation TEXT NOT NULL CHECK(operation IN ('upload','verify','download','delete')),
+      status TEXT NOT NULL CHECK(status IN ('queued','running','retry_wait','success','failed','cancelled')),
+      priority INTEGER NOT NULL DEFAULT 0,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      next_attempt_at TEXT,
+      bytes_total INTEGER,
+      bytes_transferred INTEGER NOT NULL DEFAULT 0,
+      started_at TEXT,
+      completed_at TEXT,
+      error_code TEXT,
+      error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX one_active_transfer_per_replica_operation
+      ON transfer_jobs(replica_id,operation) WHERE status IN ('queued','running','retry_wait');
+    CREATE INDEX transfer_jobs_queue_idx ON transfer_jobs(status,next_attempt_at,priority DESC,created_at);
+    CREATE TABLE transfer_attempts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id TEXT NOT NULL REFERENCES transfer_jobs(id) ON DELETE CASCADE,
+      attempt INTEGER NOT NULL,
+      started_at TEXT NOT NULL,
+      completed_at TEXT,
+      outcome TEXT CHECK(outcome IN ('success','retry','failed','cancelled')),
+      bytes_transferred INTEGER NOT NULL DEFAULT 0,
+      error_code TEXT,
+      error TEXT
+    );
+    CREATE INDEX transfer_attempts_job_idx ON transfer_attempts(job_id,attempt);
+  `);
+  const now = new Date().toISOString();
+  db.prepare(`INSERT INTO storage_targets(id,connection_id,kind,name,root_path,encryption_mode,enabled,config_json,created_at,updated_at)
+    VALUES('local',NULL,'local','Local filesystem',?,'none',1,'{}',?,?)`).run(config.backupRoot, now, now);
+  db.exec(`
+    INSERT INTO snapshots(id,repository_id,branch_id,run_id,commit_sha,started_at,completed_at,duration_ms,origin,status,metadata_json,created_at)
+      SELECT id,repository_id,branch_id,run_id,commit_sha,started_at,completed_at,duration_ms,origin,'success','{}',completed_at FROM backups;
+    INSERT INTO backup_replicas(id,snapshot_id,target_id,status,location,size_bytes,sha256,required,verified_at,created_at,updated_at)
+      SELECT 'local-' || id,id,'local','verified',path,size_bytes,commit_sha,1,completed_at,completed_at,completed_at FROM backups;
+  `);
+});
+
+// The local target is deployment configuration, not historical state. Keep it in
+// sync when an existing database is mounted at a different backup path.
+db.prepare("UPDATE storage_targets SET root_path=?,updated_at=? WHERE id='local'")
+  .run(config.backupRoot, new Date().toISOString());
 
 const existing = db.prepare('SELECT json FROM settings WHERE id=1').get() as { json: string } | undefined;
 if (!existing) {

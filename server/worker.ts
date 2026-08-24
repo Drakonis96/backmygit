@@ -96,8 +96,16 @@ async function executeRun(runId: string) {
     db.transaction(() => {
       db.prepare(`UPDATE runs SET status='success',completed_at=?,commit_sha=?,size_bytes=?,destination=?,error=NULL WHERE id=?`)
         .run(completed.toISOString(), commitSha, metadata.sizeBytes, destination, runId);
-      db.prepare(`INSERT INTO backups(repository_id,branch_id,run_id,path,commit_sha,started_at,completed_at,size_bytes,duration_ms,origin,status)
-        VALUES(?,?,?,?,?,?,?,?,?,?,'success')`).run(row.repository_id, row.branch_id, runId, destination, commitSha, started.toISOString(), completed.toISOString(), metadata.sizeBytes, duration, row.origin);
+      const snapshot = db.prepare(`INSERT INTO snapshots(repository_id,branch_id,run_id,commit_sha,started_at,completed_at,duration_ms,origin,status,metadata_json,created_at)
+        VALUES(?,?,?,?,?,?,?,?,'success',?,?) RETURNING id`).get(
+          row.repository_id, row.branch_id, runId, commitSha, started.toISOString(), completed.toISOString(), duration,
+          row.origin, JSON.stringify(metadata), completed.toISOString(),
+        ) as { id: number };
+      db.prepare(`INSERT INTO backup_replicas(id,snapshot_id,target_id,status,location,size_bytes,sha256,required,verified_at,created_at,updated_at)
+        VALUES(?,?,'local','verified',?,?,?,?,?,?,?)`).run(
+          randomUUID(), snapshot.id, destination, metadata.sizeBytes, commitSha, 1,
+          completed.toISOString(), completed.toISOString(), completed.toISOString(),
+        );
       db.prepare('UPDATE branches SET last_run_at=? WHERE id=?').run(completed.toISOString(), row.branch_id);
     })();
     try {
