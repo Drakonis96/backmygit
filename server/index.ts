@@ -11,19 +11,26 @@ import { csrfProtection, hostGuard, httpsGuard, requestContext } from './securit
 import { startScheduler, stopScheduler } from "./scheduler.js";
 import { reconcileFilesystem } from "./storage.js";
 import { startWorker, stopWorker } from "./worker.js";
+import { ensureMasterKey } from './secrets.js';
+
+if (config.processRole === 'worker')
+  throw new Error('Use dist-server/worker-entry.js when PROCESS_ROLE=worker');
 
 await fs.mkdir(config.backupRoot, { recursive: true });
 await fs.mkdir(config.dataDir, { recursive: true });
 await ensureBootstrapToken();
-const temporaryRoot = path.join(config.backupRoot, ".tmp");
-await fs.mkdir(temporaryRoot, { recursive: true });
-for (const stale of await fs.readdir(temporaryRoot)) {
-  await fs.rm(path.join(temporaryRoot, stale), {
-    recursive: true,
-    force: true,
-  });
+await ensureMasterKey();
+if (config.processRole === 'all') {
+  const temporaryRoot = path.join(config.backupRoot, ".tmp");
+  await fs.mkdir(temporaryRoot, { recursive: true });
+  for (const stale of await fs.readdir(temporaryRoot)) {
+    await fs.rm(path.join(temporaryRoot, stale), {
+      recursive: true,
+      force: true,
+    });
+  }
+  await reconcileFilesystem();
 }
-await reconcileFilesystem();
 
 const app = express();
 app.disable("x-powered-by");
@@ -74,14 +81,16 @@ const server = app.listen(config.port, "0.0.0.0", () => {
     `BackMyGit ${config.appVersion} listening on :${config.port}; backups: ${config.backupRoot}`,
   );
 });
-startWorker();
-startScheduler();
+if (config.processRole === 'all') {
+  startWorker();
+  startScheduler();
+}
 
 async function shutdown(signal: string) {
   console.log(`${signal} received; shutting down`);
-  stopScheduler();
+  if (config.processRole === 'all') stopScheduler();
   server.close();
-  await stopWorker();
+  if (config.processRole === 'all') await stopWorker();
   process.exit(0);
 }
 process.once("SIGTERM", () => void shutdown("SIGTERM"));

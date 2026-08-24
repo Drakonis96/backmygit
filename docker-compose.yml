@@ -1,3 +1,20 @@
+x-common-environment: &common-environment
+  BACKUP_ROOT: /backups
+  BACKUP_HOST_PATH: ${BACKUP_HOST_PATH:?Set BACKUP_HOST_PATH in .env}
+  DATA_DIR: /data
+  APP_VERSION: ${APP_VERSION:-0.1.0}
+  WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+  WORKER_LEASE_MS: ${WORKER_LEASE_MS:-300000}
+  MIN_FREE_BYTES: ${MIN_FREE_BYTES:-536870912}
+  GIT_TIMEOUT_MS: ${GIT_TIMEOUT_MS:-1800000}
+  RCLONE_TIMEOUT_MS: ${RCLONE_TIMEOUT_MS:-3600000}
+  PUBLIC_URL: ${PUBLIC_URL:-}
+  ALLOWED_HOSTS: ${ALLOWED_HOSTS:-}
+  TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+  FORCE_HTTPS: ${FORCE_HTTPS:-false}
+  SESSION_IDLE_MS: ${SESSION_IDLE_MS:-1800000}
+  SESSION_ABSOLUTE_MS: ${SESSION_ABSOLUTE_MS:-43200000}
+
 services:
   app:
     build: .
@@ -9,19 +26,8 @@ services:
       # reverse proxy cannot reach the service through a Docker network.
       - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8787}:8787"
     environment:
-      BACKUP_ROOT: /backups
-      BACKUP_HOST_PATH: ${BACKUP_HOST_PATH:?Set BACKUP_HOST_PATH in .env}
-      DATA_DIR: /data
-      APP_VERSION: ${APP_VERSION:-0.1.0}
-      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
-      MIN_FREE_BYTES: ${MIN_FREE_BYTES:-536870912}
-      GIT_TIMEOUT_MS: ${GIT_TIMEOUT_MS:-1800000}
-      PUBLIC_URL: ${PUBLIC_URL:-}
-      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-}
-      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
-      FORCE_HTTPS: ${FORCE_HTTPS:-false}
-      SESSION_IDLE_MS: ${SESSION_IDLE_MS:-1800000}
-      SESSION_ABSOLUTE_MS: ${SESSION_ABSOLUTE_MS:-43200000}
+      <<: *common-environment
+      PROCESS_ROLE: web
     volumes:
       # Actual Git backups live directly at this editable host path.
       - ${BACKUP_HOST_PATH}:/backups
@@ -33,6 +39,22 @@ services:
       timeout: 5s
       start_period: 15s
       retries: 3
+
+  worker:
+    image: ${BACKMYGIT_IMAGE:-drakonis96/backmygit:latest}
+    restart: unless-stopped
+    command: ["node", "dist-server/worker-entry.js"]
+    environment:
+      <<: *common-environment
+      PROCESS_ROLE: worker
+    volumes:
+      - ${BACKUP_HOST_PATH}:/backups
+      - app-data:/data
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      disable: true
 
 volumes:
   app-data:

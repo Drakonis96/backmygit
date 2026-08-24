@@ -102,12 +102,12 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 `);
 
 function migrate(version: number, name: string, migration: () => void): void {
-  if (db.prepare('SELECT 1 FROM schema_migrations WHERE version=?').get(version)) return;
   db.transaction(() => {
+    if (db.prepare('SELECT 1 FROM schema_migrations WHERE version=?').get(version)) return;
     migration();
     db.prepare('INSERT INTO schema_migrations(version,name,applied_at) VALUES(?,?,?)')
       .run(version, name, new Date().toISOString());
-  })();
+  }).immediate();
 }
 
 migrate(1, 'multi-location snapshots', () => {
@@ -254,6 +254,29 @@ migrate(1, 'multi-location snapshots', () => {
   `);
 });
 
+migrate(2, 'worker leases and encrypted secrets', () => {
+  db.exec(`
+    ALTER TABLE runs ADD COLUMN claimed_by TEXT;
+    ALTER TABLE runs ADD COLUMN lease_expires_at TEXT;
+    ALTER TABLE runs ADD COLUMN heartbeat_at TEXT;
+    ALTER TABLE transfer_jobs ADD COLUMN claimed_by TEXT;
+    ALTER TABLE transfer_jobs ADD COLUMN lease_expires_at TEXT;
+    ALTER TABLE transfer_jobs ADD COLUMN heartbeat_at TEXT;
+    CREATE TABLE encrypted_secrets (
+      id TEXT PRIMARY KEY,
+      owner_type TEXT NOT NULL CHECK(owner_type IN ('connection','oauth_state','recovery')),
+      owner_id TEXT NOT NULL,
+      purpose TEXT NOT NULL,
+      ciphertext TEXT NOT NULL,
+      key_version INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(owner_type,owner_id,purpose)
+    );
+    CREATE INDEX encrypted_secrets_owner_idx ON encrypted_secrets(owner_type,owner_id);
+  `);
+});
+
 // The local target is deployment configuration, not historical state. Keep it in
 // sync when an existing database is mounted at a different backup path.
 db.prepare("UPDATE storage_targets SET root_path=?,updated_at=? WHERE id='local'")
@@ -263,9 +286,6 @@ const existing = db.prepare('SELECT json FROM settings WHERE id=1').get() as { j
 if (!existing) {
   db.prepare('INSERT INTO settings(id,json,updated_at) VALUES(1,?,?)').run(JSON.stringify(DEFAULT_SETTINGS), new Date().toISOString());
 }
-db.prepare("UPDATE runs SET status='failed', completed_at=?, error=COALESCE(error, 'Application restarted during backup') WHERE status='running'")
-  .run(new Date().toISOString());
-
 export function getSettings(): AppSettings {
   const row = db.prepare('SELECT json FROM settings WHERE id=1').get() as { json: string };
   try {

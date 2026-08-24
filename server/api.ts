@@ -68,8 +68,8 @@ router.get(
   "/health",
   asyncRoute(async (_req, res) => {
     db.prepare("SELECT 1").get();
-    await fs.access(config.backupRoot, fs.constants.R_OK | fs.constants.W_OK);
-    res.json({ status: "ok", version: config.appVersion });
+    await fs.access(config.backupRoot, config.processRole === 'web' ? fs.constants.R_OK : fs.constants.R_OK | fs.constants.W_OK);
+    res.json({ status: "ok", version: config.appVersion, role: config.processRole });
   }),
 );
 

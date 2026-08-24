@@ -23,10 +23,14 @@ function optionalUrl(value: string | undefined): URL | undefined {
 const publicUrl = optionalUrl(process.env.PUBLIC_URL);
 const allowedHosts = new Set(list(process.env.ALLOWED_HOSTS).map((host) => host.toLowerCase()));
 if (publicUrl) allowedHosts.add(publicUrl.host.toLowerCase());
+const processRole = process.env.PROCESS_ROLE || 'all';
+if (!['all', 'web', 'worker'].includes(processRole))
+  throw new Error('PROCESS_ROLE must be all, web, or worker');
+const dataDir = path.resolve(process.env.DATA_DIR || './data');
 
 export const config = {
   port: Number(process.env.PORT || 8787),
-  dataDir: path.resolve(process.env.DATA_DIR || './data'),
+  dataDir,
   backupRoot: path.resolve(process.env.BACKUP_ROOT || './backups'),
   backupHostPath: process.env.BACKUP_HOST_PATH || process.env.BACKUP_ROOT || './backups',
   appVersion: process.env.APP_VERSION || '0.1.0',
@@ -40,5 +44,12 @@ export const config = {
   bootstrapTokenPath: path.resolve(process.env.BOOTSTRAP_TOKEN_PATH || path.join(process.env.DATA_DIR || './data', 'bootstrap-token')),
   sessionIdleMs: Math.max(5 * 60_000, Number(process.env.SESSION_IDLE_MS || 30 * 60_000)),
   sessionAbsoluteMs: Math.max(30 * 60_000, Number(process.env.SESSION_ABSOLUTE_MS || 12 * 60 * 60_000)),
+  processRole: processRole as 'all' | 'web' | 'worker',
+  workerLeaseMs: Math.max(60_000, Number(process.env.WORKER_LEASE_MS || 5 * 60_000)),
+  masterKeyFile: path.resolve(process.env.MASTER_KEY_FILE || path.join(dataDir, 'master.key')),
+  masterKeyExternal: Boolean(process.env.MASTER_KEY_FILE),
+  rcloneBinary: process.env.RCLONE_BINARY || 'rclone',
+  rcloneExternalConfig: path.resolve(process.env.RCLONE_CONFIG_FILE || '/config/rclone/rclone.conf'),
+  rcloneTimeoutMs: Math.max(30_000, Number(process.env.RCLONE_TIMEOUT_MS || 60 * 60_000)),
   isProduction: process.env.NODE_ENV === 'production'
 };
