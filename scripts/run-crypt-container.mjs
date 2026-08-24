@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const image = process.env.BACKMYGIT_TEST_IMAGE || 'backmygit:release-candidate';
+const uid = typeof process.getuid === 'function' ? process.getuid() : 1000;
+const gid = typeof process.getgid === 'function' ? process.getgid() : 1000;
 const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'backmygit-crypt-'));
 const dataRoot = path.join(temporaryRoot, 'data');
 const backupRoot = path.join(temporaryRoot, 'backups');
@@ -20,7 +22,8 @@ fs.writeFileSync(configFile, '[local_test]\ntype = local\nnounc = true\n', { mod
 try {
   const result = spawnSync('docker', [
     'run', '--rm', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true',
-    '--tmpfs', '/tmp:rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=0700',
+    '--user', `${uid}:${gid}`,
+    '--tmpfs', `/tmp:rw,noexec,nosuid,nodev,uid=${uid},gid=${gid},mode=0700`,
     '-e', 'DATA_DIR=/data', '-e', 'BACKUP_ROOT=/backups', '-e', 'RCLONE_CONFIG_FILE=/config/rclone.conf',
     '-v', `${dataRoot}:/data`, '-v', `${backupRoot}:/backups`, '-v', `${remoteRoot}:/remote-parent`,
     '-v', `${configFile}:/config/rclone.conf:ro`,
