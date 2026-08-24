@@ -2,7 +2,7 @@ x-common-environment: &common-environment
   BACKUP_ROOT: /backups
   BACKUP_HOST_PATH: ${BACKUP_HOST_PATH:?Set BACKUP_HOST_PATH in .env}
   DATA_DIR: /data
-  APP_VERSION: ${APP_VERSION:-0.1.0}
+  APP_VERSION: ${APP_VERSION:-0.2.0}
   WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
   TRANSFER_CONCURRENCY: ${TRANSFER_CONCURRENCY:-2}
   TRANSFER_MAX_ATTEMPTS: ${TRANSFER_MAX_ATTEMPTS:-5}
@@ -36,6 +36,12 @@ services:
       - ${BACKUP_HOST_PATH}:/backups
       # Only application state (SQLite) uses a Docker-managed volume.
       - app-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=0700
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 30s
@@ -53,6 +59,12 @@ services:
     volumes:
       - ${BACKUP_HOST_PATH}:/backups
       - app-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=0700
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 512
     depends_on:
       app:
         condition: service_healthy

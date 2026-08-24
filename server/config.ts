@@ -33,7 +33,7 @@ export const config = {
   dataDir,
   backupRoot: path.resolve(process.env.BACKUP_ROOT || './backups'),
   backupHostPath: process.env.BACKUP_HOST_PATH || process.env.BACKUP_ROOT || './backups',
-  appVersion: process.env.APP_VERSION || '0.1.0',
+  appVersion: process.env.APP_VERSION || '0.2.0',
   workerConcurrency: Math.max(1, Number(process.env.WORKER_CONCURRENCY || 2)),
   transferConcurrency: Math.max(1, Number(process.env.TRANSFER_CONCURRENCY || 2)),
   transferMaxAttempts: Math.max(1, Number(process.env.TRANSFER_MAX_ATTEMPTS || 5)),

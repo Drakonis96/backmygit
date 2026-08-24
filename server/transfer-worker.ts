@@ -101,7 +101,7 @@ async function upload(jobId: string, replicaId: string): Promise<{ artifact: Rea
 function remoteTransferContext(jobId: string): any {
   const row = db.prepare(`SELECT j.id job_id,j.operation,j.replica_id,r.location replica_location,r.snapshot_id,
     r.sha256,r.size_bytes,s.commit_sha,s.repository_id,s.branch_id,t.id target_id,t.root_path,t.encryption_mode,
-    c.id connection_id,c.remote_name,c.managed,lr.id local_replica_id,lr.location local_destination,
+    c.id connection_id,c.remote_name,c.managed,lr.id local_replica_id,lr.location local_destination,lr.size_bytes local_size_bytes,
     repo.owner,repo.name repository,br.name branch
     FROM transfer_jobs j JOIN backup_replicas r ON r.id=j.replica_id
     JOIN snapshots s ON s.id=r.snapshot_id JOIN storage_targets t ON t.id=r.target_id
@@ -131,6 +131,10 @@ async function restore(jobId: string): Promise<number> {
   await fs.rm(temporaryArchive, { force: true });
   await fs.rm(temporaryDirectory, { recursive: true, force: true });
   try {
+    const filesystem = await fs.statfs(config.backupRoot);
+    const freeBytes = filesystem.bavail * filesystem.bsize;
+    if (freeBytes < Number(context.local_size_bytes || 0) + config.minFreeBytes)
+      throw new Error('Insufficient free space to restore this snapshot safely');
     await withTargetRcloneConfig(
       { id: context.connection_id, remote_name: context.remote_name, managed: context.managed },
       { id: context.target_id, root_path: context.root_path, encryption_mode: context.encryption_mode },
@@ -146,7 +150,9 @@ async function restore(jobId: string): Promise<number> {
         });
       },
     );
-    if (await sha256File(temporaryArchive) !== context.sha256) throw new Error('Downloaded replica SHA-256 verification failed');
+    const downloaded = await fs.stat(temporaryArchive);
+    if (downloaded.size !== context.size_bytes || await sha256File(temporaryArchive) !== context.sha256)
+      throw new Error('Downloaded replica size or SHA-256 verification failed');
     const { stdout: listing } = await exec('tar', ['-tf', temporaryArchive], { timeout: config.rcloneTimeoutMs, maxBuffer: 8 * 1024 * 1024 });
     for (const entry of listing.split(/\r?\n/).filter(Boolean)) {
       const normalized = entry.replace(/^\.\//, '');

@@ -59,9 +59,9 @@ export async function deleteBackupRecord(id: number, deleteRemote = false): Prom
   if (!backup) throw Object.assign(new Error('Backup not found'), { status: 404 });
   if (!isWithin(config.backupRoot, backup.path)) throw new Error('Refusing to delete a path outside the backup root');
   await fs.rm(backup.path, { recursive: true, force: true });
-  if (deleteRemote) enqueueSnapshotRemoteDeletions(backup.id);
   db.prepare("UPDATE backup_replicas SET status='deleted',deleted_at=?,updated_at=? WHERE id=?")
     .run(new Date().toISOString(), new Date().toISOString(), backup.replica_id);
+  if (deleteRemote) enqueueSnapshotRemoteDeletions(backup.id);
   const branchDir = path.dirname(backup.path);
   await removeIfEmpty(branchDir);
   await removeIfEmpty(path.dirname(branchDir));
