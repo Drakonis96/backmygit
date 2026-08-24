@@ -22,6 +22,7 @@ import {
 } from "./types.js";
 import { isValidTimezone, searchTimezoneLocations } from "./timezones.js";
 import { enqueueBackup } from "./worker.js";
+import cloudApi from './cloud-api.js';
 
 const router = Router();
 const asyncRoute =
@@ -63,6 +64,8 @@ const retentionSchema = z.object({
   keepLatest: z.number().int().min(1).max(10000),
   minimumToKeep: z.number().int().min(1).max(10000),
 });
+
+router.use('/cloud', cloudApi);
 
 router.get(
   "/health",

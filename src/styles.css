@@ -1892,6 +1892,227 @@ tbody tr:last-child td {
   gap: 7px;
   flex: 0 0 auto;
 }
+.destination-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 12px;
+}
+.destination-card {
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  border-radius: 11px;
+  padding: 14px;
+  min-width: 0;
+}
+.destination-card-head {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+.provider-icon,
+.target-icon {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  color: var(--primary);
+  background: var(--primary-soft);
+}
+.destination-card-head b,
+.destination-card-head small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.destination-card-head small {
+  color: var(--muted);
+  font-size: 10px;
+  margin-top: 3px;
+}
+.destination-actions {
+  display: flex;
+  gap: 7px;
+  margin-top: 13px;
+}
+.destination-actions .button {
+  flex: 1;
+}
+.connection-error {
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-radius: 7px;
+  font-size: 10px;
+  padding: 7px 9px;
+  margin: 10px 0 0;
+  overflow-wrap: anywhere;
+}
+.destination-help {
+  margin-top: 0;
+}
+.target-list {
+  display: grid;
+  gap: 8px;
+}
+.target-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 58px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+  cursor: pointer;
+}
+.target-row.local {
+  cursor: default;
+}
+.target-row > input {
+  width: 17px;
+  height: 17px;
+  accent-color: var(--primary);
+  flex: 0 0 auto;
+}
+.target-row > .target-icon {
+  display: grid;
+  margin: 0;
+  color: var(--primary);
+  font-size: inherit;
+  font-weight: inherit;
+  flex: 0 0 auto;
+}
+.target-row > .target-main {
+  display: block;
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+  flex: 1;
+  min-width: 0;
+}
+.target-main b,
+.target-main small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.target-main small {
+  color: var(--muted);
+  font-size: 10px;
+  margin-top: 3px;
+}
+.target-row > .encryption-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  color: var(--primary);
+  font-size: 10px;
+  font-weight: 700;
+}
+.encryption-label svg {
+  width: 14px;
+}
+.folder-input {
+  display: flex;
+  gap: 7px;
+}
+.folder-input input {
+  flex: 1;
+}
+.oauth-note {
+  padding: 11px;
+  color: var(--blue);
+  background: var(--blue-soft);
+  border-radius: 8px;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.folder-browser {
+  min-height: 220px;
+  display: grid;
+  align-content: start;
+  gap: 6px;
+}
+.folder-browser > code {
+  padding: 9px;
+  border-radius: 7px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.folder-row {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface);
+  cursor: pointer;
+  text-align: left;
+}
+.folder-row:hover:not(:disabled) {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: var(--primary-soft);
+}
+@media (max-width: 640px) {
+  .destination-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .destination-card {
+    min-width: 0;
+  }
+  .destination-card-head {
+    grid-template-columns: 38px minmax(0, 1fr);
+  }
+  .destination-card-head .badge {
+    grid-column: 2;
+    justify-self: start;
+  }
+  .destination-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 34px;
+  }
+  .destination-actions .button {
+    min-width: 0;
+    padding-inline: 7px;
+    font-size: 10px;
+  }
+  .target-row {
+    display: grid;
+    grid-template-columns: 17px 38px minmax(0, 1fr) 34px;
+    gap: 8px;
+  }
+  .target-row > input,
+  .target-row > .target-icon {
+    grid-row: 1 / span 2;
+    align-self: center;
+  }
+  .target-row > .target-main {
+    grid-column: 3;
+    grid-row: 1;
+  }
+  .target-row > .encryption-label {
+    grid-column: 3;
+    grid-row: 2;
+  }
+  .target-row > .icon-button {
+    grid-column: 4;
+    grid-row: 1 / span 2;
+    align-self: center;
+  }
+  .folder-input {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
 .warning-box {
   display: flex;
   align-items: flex-start;

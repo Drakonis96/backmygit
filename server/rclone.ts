@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,7 +7,7 @@ import { config } from './config.js';
 import { getSecret } from './secrets.js';
 import { assertRemoteName, renderRcloneConfig, type ManagedRcloneConfig } from './rclone-config.js';
 
-export { assertRemoteName, remotePath, renderRcloneConfig } from './rclone-config.js';
+export { assertRemoteName, normalizeRemoteSubpath, remotePath, renderRcloneConfig } from './rclone-config.js';
 export type { ManagedRcloneConfig } from './rclone-config.js';
 
 const exec = promisify(execFile);
@@ -77,6 +77,32 @@ export async function rcloneVersion(): Promise<string> {
   const firstLine = stdout.split(/\r?\n/, 1)[0]?.trim();
   if (!/^rclone v\d+\.\d+\.\d+/.test(firstLine)) throw new Error('Unable to validate the installed rclone binary');
   return firstLine;
+}
+
+export async function obscureRcloneSecret(value: string): Promise<string> {
+  if (!value || /[\r\n\0]/.test(value)) throw new Error('Invalid secret value');
+  const home = path.join(config.dataDir, 'rclone-home');
+  await fs.mkdir(home, { recursive: true, mode: 0o700 });
+  return new Promise((resolve, reject) => {
+    const child = spawn(config.rcloneBinary, ['obscure', '-'], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: home, LANG: 'C.UTF-8' },
+    });
+    let stdout = '';
+    let stderr = '';
+    const timeout = setTimeout(() => child.kill('SIGKILL'), 30_000);
+    child.stdout.on('data', chunk => { if (stdout.length < 4096) stdout += chunk; });
+    child.stderr.on('data', chunk => { if (stderr.length < 4096) stderr += chunk; });
+    child.once('error', error => { clearTimeout(timeout); reject(error); });
+    child.once('close', code => {
+      clearTimeout(timeout);
+      const obscured = stdout.trim();
+      if (code !== 0 || !obscured || /[\r\n\0]/.test(obscured))
+        reject(new Error(stderr.trim() || 'Unable to protect the rclone password'));
+      else resolve(obscured);
+    });
+    child.stdin.end(value);
+  });
 }
 
 export const platformArchitecture = `${os.platform()}/${os.arch()}`;

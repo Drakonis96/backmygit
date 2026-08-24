@@ -24,14 +24,15 @@ export function renderRcloneConfig(remoteName: string, remote: ManagedRcloneConf
 
 export function remotePath(remoteName: string, rootPath: string, relative = ''): string {
   assertRemoteName(remoteName);
-  const normalized = [rootPath, relative]
-    .join('/')
-    .split('/')
-    .filter(part => part && part !== '.')
-    .map(part => {
-      if (part === '..' || /[\r\n\0]/.test(part)) throw new Error('Invalid remote path');
-      return part;
-    })
-    .join('/');
+  const normalized = normalizeRemoteSubpath([rootPath, relative].join('/'));
   return `${remoteName}:${normalized}`;
+}
+
+export function normalizeRemoteSubpath(value: string): string {
+  if (value.length > 1024 || /[\r\n\0:]/.test(value))
+    throw Object.assign(new Error('Invalid remote folder path'), { status: 400 });
+  const parts = value.split('/').filter(part => part && part !== '.');
+  if (parts.some(part => part === '..'))
+    throw Object.assign(new Error('Invalid remote folder path'), { status: 400 });
+  return parts.join('/');
 }

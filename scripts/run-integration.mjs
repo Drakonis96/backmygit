@@ -7,11 +7,23 @@ const root = await fs.mkdtemp(path.join(os.tmpdir(), 'backmygit-integration-'));
 const dataDir = path.join(root, 'data');
 const backupRoot = path.join(root, 'backups');
 await fs.mkdir(dataDir); await fs.mkdir(backupRoot);
+const fakeRclone = path.join(root, 'rclone');
+const externalRcloneConfig = path.join(root, 'rclone.conf');
+await fs.writeFile(fakeRclone, `#!/bin/sh
+case " $* " in
+  *" version "*) echo "rclone v1.75.0" ;;
+  *" lsjson "*) echo '[{"Name":"Projects","Path":"Projects","IsDir":true,"ID":"folder-1"},{"Name":"file.txt","Path":"file.txt","IsDir":false}]' ;;
+  *" obscure "*) read -r value; printf 'obscured-%s\\n' "$value" ;;
+  *) echo "unsupported fake rclone command" >&2; exit 2 ;;
+esac
+`);
+await fs.chmod(fakeRclone, 0o700);
+await fs.writeFile(externalRcloneConfig, '[integration_local]\ntype = local\n');
 const port = 28_000 + Math.floor(Math.random() * 1_000);
 const base = `http://127.0.0.1:${port}`;
 const server = spawn(process.execPath, ['dist-server/index.js'], {
   cwd: process.cwd(),
-  env: { ...process.env, NODE_ENV: 'production', PROCESS_ROLE: 'web', PORT: String(port), DATA_DIR: dataDir, BACKUP_ROOT: backupRoot, BACKUP_HOST_PATH: backupRoot },
+  env: { ...process.env, NODE_ENV: 'production', PROCESS_ROLE: 'web', PORT: String(port), DATA_DIR: dataDir, BACKUP_ROOT: backupRoot, BACKUP_HOST_PATH: backupRoot, RCLONE_BINARY: fakeRclone, RCLONE_CONFIG_FILE: externalRcloneConfig },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let serverLog = '';
@@ -40,7 +52,7 @@ try {
   if (!ready) throw new Error(`Integration server did not start:\n${serverLog}`);
   worker = spawn(process.execPath, ['dist-server/worker-entry.js'], {
     cwd: process.cwd(),
-    env: { ...process.env, NODE_ENV: 'production', PROCESS_ROLE: 'worker', DATA_DIR: dataDir, BACKUP_ROOT: backupRoot, BACKUP_HOST_PATH: backupRoot },
+    env: { ...process.env, NODE_ENV: 'production', PROCESS_ROLE: 'worker', DATA_DIR: dataDir, BACKUP_ROOT: backupRoot, BACKUP_HOST_PATH: backupRoot, RCLONE_BINARY: fakeRclone, RCLONE_CONFIG_FILE: externalRcloneConfig },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   worker.stdout.on('data', chunk => { workerLog += chunk; });

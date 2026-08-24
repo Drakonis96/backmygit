@@ -83,6 +83,57 @@ if (setupStatus.required) {
   throw new Error("Integration test requires a fresh database without users");
 }
 
+const providers = await request('/cloud/providers');
+ok(
+  'cloud provider catalog',
+  ['drive', 'dropbox', 'onedrive', 'mega', 's3', 'external'].every(provider => providers.items.some(item => item.id === provider)),
+);
+const managedConnection = await json('/cloud/connections', 'POST', {
+  name: 'Managed MEGA test',
+  provider: 'mega',
+  credentials: { username: 'integration@example.com', password: 'managed-secret-password' },
+});
+const connectionList = await request('/cloud/connections');
+const secretDatabase = new Database(databasePath, { readonly: true });
+const storedSecret = secretDatabase.prepare("SELECT ciphertext FROM encrypted_secrets WHERE owner_type='connection' AND owner_id=?").get(managedConnection.id);
+secretDatabase.close();
+ok(
+  'managed cloud credentials remain encrypted',
+  !JSON.stringify(managedConnection).includes('integration@example.com') &&
+    !JSON.stringify(connectionList).includes('managed-secret-password') &&
+    !storedSecret.ciphertext.includes('integration@example.com') &&
+    !storedSecret.ciphertext.includes('managed-secret-password'),
+);
+const connection = await json('/cloud/connections', 'POST', {
+  name: 'Integration rclone',
+  provider: 'external',
+  remoteName: 'integration_local',
+});
+ok('external rclone connection creation', connection.managed === false && !JSON.stringify(connection).includes('credentials'));
+const testedConnection = await json(`/cloud/connections/${connection.id}/test`, 'POST');
+ok('rclone connection test', testedConnection.status === 'connected');
+const remoteFolders = await request(`/cloud/connections/${connection.id}/browse?path=BackMyGit`);
+ok(
+  'remote folder browser',
+  remoteFolders.items.length === 1 && remoteFolders.items[0].path === 'BackMyGit/Projects' && remoteFolders.items[0].id === 'folder-1',
+);
+const traversalResponse = await fetch(`${base}/api/cloud/connections/${connection.id}/browse?path=${encodeURIComponent('../private')}`, {
+  headers: { Cookie: sessionCookie },
+});
+ok('remote folder traversal is blocked', traversalResponse.status === 400);
+const cloudTarget = await json('/cloud/targets', 'POST', {
+  connectionId: connection.id,
+  name: 'Integration destination',
+  rootPath: remoteFolders.items[0].path,
+  encryptionMode: 'none',
+});
+const assignments = await json('/cloud/assignments/global', 'PUT', { targetIds: [cloudTarget.id] });
+const storedAssignments = await request('/cloud/assignments/global');
+ok(
+  'multiple destination assignment persistence',
+  assignments.targetIds[0] === cloudTarget.id && storedAssignments.targetIds[0] === cloudTarget.id,
+);
+
 const exact = await request("/github/search?q=drakonis96%20nodus");
 ok(
   "owner/repository discovery",

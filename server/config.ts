@@ -51,5 +51,6 @@ export const config = {
   rcloneBinary: process.env.RCLONE_BINARY || 'rclone',
   rcloneExternalConfig: path.resolve(process.env.RCLONE_CONFIG_FILE || '/config/rclone/rclone.conf'),
   rcloneTimeoutMs: Math.max(30_000, Number(process.env.RCLONE_TIMEOUT_MS || 60 * 60_000)),
+  allowPrivateCloudEndpoints: process.env.ALLOW_PRIVATE_CLOUD_ENDPOINTS === 'true',
   isProduction: process.env.NODE_ENV === 'production'
 };

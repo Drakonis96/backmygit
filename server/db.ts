@@ -277,6 +277,26 @@ migrate(2, 'worker leases and encrypted secrets', () => {
   `);
 });
 
+migrate(3, 'target-scoped secrets', () => {
+  db.exec(`
+    ALTER TABLE encrypted_secrets RENAME TO encrypted_secrets_v2;
+    CREATE TABLE encrypted_secrets (
+      id TEXT PRIMARY KEY,
+      owner_type TEXT NOT NULL CHECK(owner_type IN ('connection','target','oauth_state','recovery')),
+      owner_id TEXT NOT NULL,
+      purpose TEXT NOT NULL,
+      ciphertext TEXT NOT NULL,
+      key_version INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(owner_type,owner_id,purpose)
+    );
+    INSERT INTO encrypted_secrets SELECT * FROM encrypted_secrets_v2;
+    DROP TABLE encrypted_secrets_v2;
+    CREATE INDEX encrypted_secrets_owner_idx ON encrypted_secrets(owner_type,owner_id);
+  `);
+});
+
 // The local target is deployment configuration, not historical state. Keep it in
 // sync when an existing database is mounted at a different backup path.
 db.prepare("UPDATE storage_targets SET root_path=?,updated_at=? WHERE id='local'")

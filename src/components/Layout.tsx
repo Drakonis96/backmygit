@@ -1,6 +1,7 @@
 import {
   Archive,
   Boxes,
+  Cloud,
   ChevronLeft,
   Database,
   GitBranch,
@@ -27,6 +28,7 @@ const nav = [
   ["backups", "/backups", Archive],
   ["history", "/history", History],
   ["storage", "/storage", Database],
+  ["destinations", "/destinations", Cloud],
   ["settings", "/settings", Settings],
 ] as const;
 export default function Layout({ children }: { children: ReactNode }) {

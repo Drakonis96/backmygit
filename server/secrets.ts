@@ -44,7 +44,9 @@ function context(ownerType: string, ownerId: string, purpose: string): string {
   return `backmygit:${ownerType}:${ownerId}:${purpose}`;
 }
 
-export async function putSecret(ownerType: 'connection' | 'oauth_state' | 'recovery', ownerId: string, purpose: string, value: unknown): Promise<void> {
+type SecretOwner = 'connection' | 'target' | 'oauth_state' | 'recovery';
+
+export async function putSecret(ownerType: SecretOwner, ownerId: string, purpose: string, value: unknown): Promise<void> {
   const now = new Date().toISOString();
   const ciphertext = sealPayload(await masterKey(), context(ownerType, ownerId, purpose), value);
   db.prepare(`INSERT INTO encrypted_secrets(id,owner_type,owner_id,purpose,ciphertext,key_version,created_at,updated_at)
@@ -54,13 +56,13 @@ export async function putSecret(ownerType: 'connection' | 'oauth_state' | 'recov
       );
 }
 
-export async function getSecret<T>(ownerType: 'connection' | 'oauth_state' | 'recovery', ownerId: string, purpose: string): Promise<T | undefined> {
+export async function getSecret<T>(ownerType: SecretOwner, ownerId: string, purpose: string): Promise<T | undefined> {
   const row = db.prepare(`SELECT ciphertext FROM encrypted_secrets
     WHERE owner_type=? AND owner_id=? AND purpose=?`).get(ownerType, ownerId, purpose) as { ciphertext: string } | undefined;
   if (!row) return undefined;
   return openPayload<T>(await masterKey(), context(ownerType, ownerId, purpose), row.ciphertext);
 }
 
-export function deleteSecrets(ownerType: 'connection' | 'oauth_state' | 'recovery', ownerId: string): void {
+export function deleteSecrets(ownerType: SecretOwner, ownerId: string): void {
   db.prepare('DELETE FROM encrypted_secrets WHERE owner_type=? AND owner_id=?').run(ownerType, ownerId);
 }

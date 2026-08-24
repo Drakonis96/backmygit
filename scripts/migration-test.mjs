@@ -63,6 +63,7 @@ const inspect = `
     const result = {
       migration: db.prepare('SELECT name FROM schema_migrations WHERE version=1').get(),
       leaseMigration: db.prepare('SELECT name FROM schema_migrations WHERE version=2').get(),
+      targetSecretMigration: db.prepare('SELECT name FROM schema_migrations WHERE version=3').get(),
       legacy: db.prepare('SELECT COUNT(*) count FROM backups').get(),
       snapshots: db.prepare('SELECT COUNT(*) count FROM snapshots').get(),
       replica: db.prepare("SELECT snapshot_id,target_id,status,location,size_bytes FROM backup_replicas WHERE id='local-1'").get(),
@@ -117,6 +118,7 @@ try {
   const migrated = run(firstBackupRoot);
   if (migrated.migration?.name !== 'multi-location snapshots') throw new Error('migration was not recorded');
   if (migrated.leaseMigration?.name !== 'worker leases and encrypted secrets') throw new Error('lease migration was not recorded');
+  if (migrated.targetSecretMigration?.name !== 'target-scoped secrets') throw new Error('target secret migration was not recorded');
   if (migrated.legacy.count !== 1 || migrated.snapshots.count !== 1) throw new Error('legacy snapshot was not migrated exactly once');
   if (migrated.replica?.status !== 'verified' || migrated.replica?.target_id !== 'local' || migrated.replica?.size_bytes !== 1000)
     throw new Error('local replica migration is invalid');
