@@ -1,0 +1,58 @@
+{
+  "name": "backmygit",
+  "version": "0.1.0",
+  "description": "Self-hosted GitHub repository backup manager",
+  "license": "GPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Drakonis96/backmygit.git"
+  },
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -n api,web -c cyan,magenta \"tsx watch server/index.ts\" \"vite\"",
+    "build": "tsc -p tsconfig.server.json && vite build",
+    "start": "node dist-server/index.js",
+    "test": "vitest run",
+    "test:integration": "node scripts/integration-test.mjs",
+    "lint": "eslint . --max-warnings=0",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit"
+  },
+  "dependencies": {
+    "archiver": "^7.0.1",
+    "better-sqlite3": "^11.8.1",
+    "compression": "^1.7.5",
+    "express": "^4.21.2",
+    "helmet": "^8.0.0",
+    "i18next": "^24.2.2",
+    "lucide-react": "^0.475.0",
+    "luxon": "^3.5.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-i18next": "^15.4.0",
+    "react-router-dom": "^7.1.5",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/archiver": "^6.0.3",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/compression": "^1.7.5",
+    "@types/express": "^5.0.0",
+    "@types/luxon": "^3.4.2",
+    "@types/node": "^22.13.1",
+    "@types/react": "^19.0.8",
+    "@types/react-dom": "^19.0.3",
+    "@vitejs/plugin-react": "^4.4.1",
+    "concurrently": "^9.1.2",
+    "eslint": "^10.9.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.4",
+    "globals": "^17.11.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.67.0",
+    "vite": "^6.1.0",
+    "vitest": "^3.0.5"
+  }
+}

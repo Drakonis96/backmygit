@@ -1,0 +1,30 @@
+services:
+  app:
+    build: .
+    image: ${BACKMYGIT_IMAGE:-drakonis96/backmygit:latest}
+    container_name: backmygit
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-8787}:8787"
+    environment:
+      BACKUP_ROOT: /backups
+      BACKUP_HOST_PATH: ${BACKUP_HOST_PATH:?Set BACKUP_HOST_PATH in .env}
+      DATA_DIR: /data
+      APP_VERSION: ${APP_VERSION:-0.1.0}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+      MIN_FREE_BYTES: ${MIN_FREE_BYTES:-536870912}
+      GIT_TIMEOUT_MS: ${GIT_TIMEOUT_MS:-1800000}
+    volumes:
+      # Actual Git backups live directly at this editable host path.
+      - ${BACKUP_HOST_PATH}:/backups
+      # Only application state (SQLite) uses a Docker-managed volume.
+      - app-data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+volumes:
+  app-data:

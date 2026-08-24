@@ -1,0 +1,9 @@
+node_modules
+dist
+dist-server
+data
+backups
+docs/screenshots
+.git
+.env
+npm-debug.log
