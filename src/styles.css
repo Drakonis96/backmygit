@@ -2298,3 +2298,62 @@ tbody tr:last-child td {
 .status-toggle > .toggle > i {
   display: block;
 }
+
+.auth-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(circle at 20% 15%, color-mix(in srgb, var(--primary) 16%, transparent), transparent 34%),
+    var(--bg);
+}
+.auth-card {
+  width: min(100%, 430px);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  padding: 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+.setup-card { width: min(100%, 520px); }
+.auth-loading { min-height: 180px; align-items: center; justify-content: center; }
+.auth-brand { display: flex; align-items: center; gap: 11px; margin-bottom: 10px; }
+.auth-brand > span {
+  width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center;
+  color: white; background: var(--primary);
+}
+.auth-brand svg { width: 22px; }
+.auth-brand b, .auth-brand small { display: block; }
+.auth-brand small { color: var(--muted); font-size: 11px; margin-top: 2px; }
+.auth-icon {
+  width: 42px; height: 42px; border-radius: 50%; display: grid; place-items: center;
+  color: var(--primary); background: color-mix(in srgb, var(--primary) 12%, transparent);
+}
+.auth-card h1 { font-size: 24px; margin: 0; }
+.auth-card > p { color: var(--muted); margin: -7px 0 4px; line-height: 1.5; }
+.auth-card label { display: flex; flex-direction: column; gap: 7px; font-size: 12px; font-weight: 700; }
+.auth-card input { width: 100%; }
+.auth-card .button { justify-content: center; margin-top: 5px; }
+.field-error {
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--line));
+  background: color-mix(in srgb, var(--danger) 8%, var(--surface));
+  color: var(--danger); border-radius: 9px; padding: 10px 12px; font-size: 12px;
+}
+.setup-note {
+  display: flex; align-items: flex-start; gap: 10px; padding: 12px;
+  border-radius: 10px; background: var(--surface-2); color: var(--muted); font-size: 12px;
+}
+.setup-note svg { width: 18px; flex: 0 0 auto; }
+.setup-note code { display: block; margin-top: 7px; color: var(--text); overflow-wrap: anywhere; }
+.current-user { display: flex; flex-direction: column; align-items: flex-end; margin-right: 4px; }
+.current-user b { font-size: 12px; }
+.current-user small { color: var(--muted); font-size: 9px; text-transform: uppercase; }
+@media (max-width: 640px) {
+  .auth-shell { padding: 12px; align-items: start; }
+  .auth-card { margin-top: 20px; padding: 21px; }
+  .current-user { display: none; }
+}

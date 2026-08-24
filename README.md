@@ -4,7 +4,7 @@
 [![Docker](https://img.shields.io/docker/v/drakonis96/backmygit?label=docker)](https://hub.docker.com/r/drakonis96/backmygit)
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-3f916c)](LICENSE)
 
-BackMyGit is a self-hosted, authentication-free GitHub backup manager. It discovers public repositories in real time, creates verified and directly accessible Git backups, and manages persistent schedules, retention, history, and storage from a responsive English/Spanish interface.
+BackMyGit is a self-hosted GitHub backup manager with mandatory administrator authentication. It discovers public repositories in real time, creates verified and directly accessible Git backups, and manages persistent schedules, retention, history, and storage from a responsive English/Spanish interface.
 
 ## Table of Contents
 
@@ -62,6 +62,14 @@ mkdir -p /mnt/storage/github-backups
 docker compose up -d
 ```
 
+On first start, retrieve the one-time setup token and create the administrator in the web interface:
+
+```bash
+docker compose exec app cat /data/bootstrap-token
+```
+
+The host port binds to `127.0.0.1` by default. For an Internet-facing deployment, terminate TLS at a trusted reverse proxy and configure `PUBLIC_URL`, `ALLOWED_HOSTS`, `TRUSTED_PROXIES`, and `FORCE_HTTPS=true`. Never expose the application over plain HTTP.
+
 ## Configuration
 
 | Variable | Default | Purpose |
@@ -69,6 +77,13 @@ docker compose up -d
 | `BACKUP_HOST_PATH` | required | Host directory bind-mounted at `/backups` |
 | `BACKMYGIT_IMAGE` | `drakonis96/backmygit:v0.1.0` | Published image to run |
 | `APP_PORT` | `8787` | Web interface port |
+| `APP_BIND_ADDRESS` | `127.0.0.1` | Host interface used for the published port |
+| `PUBLIC_URL` | empty | Canonical external HTTPS origin used for security checks and OAuth |
+| `ALLOWED_HOSTS` | empty | Additional comma-separated accepted HTTP hosts |
+| `TRUSTED_PROXIES` | empty | Exact comma-separated proxy IPs or CIDRs trusted for forwarded headers |
+| `FORCE_HTTPS` | `false` | Redirect safe requests and reject unsafe requests received without HTTPS |
+| `SESSION_IDLE_MS` | `1800000` | Authenticated session inactivity timeout |
+| `SESSION_ABSOLUTE_MS` | `43200000` | Maximum authenticated session lifetime |
 | `WORKER_CONCURRENCY` | `2` | Concurrent jobs for different branches |
 | `MIN_FREE_BYTES` | `536870912` | Free-space safety threshold |
 | `GIT_TIMEOUT_MS` | `1800000` | Git command timeout in milliseconds |

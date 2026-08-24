@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { Request, Response, NextFunction } from "express";
@@ -656,7 +655,7 @@ router.delete(
   }),
 );
 
-router.use((error: any, _req: Request, res: Response, _next: NextFunction) => {
+router.use((error: any, req: Request, res: Response, _next: NextFunction) => {
   const validation = error instanceof z.ZodError;
   const status = validation ? 400 : Number(error.status || 500);
   if (status >= 500) console.error(error);
@@ -666,7 +665,7 @@ router.use((error: any, _req: Request, res: Response, _next: NextFunction) => {
       : error.message || "Unexpected error",
     code: validation ? "VALIDATION_ERROR" : error.code,
     details: validation ? error.flatten() : undefined,
-    requestId: randomUUID(),
+    requestId: req.requestId,
   });
 });
 

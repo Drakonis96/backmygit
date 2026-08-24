@@ -237,6 +237,18 @@ const en = {
   githubRepository: "GitHub repository",
   documentation: "README and documentation",
   readmeDescription: "Installation, configuration, and project overview",
+  signIn: "Sign in",
+  signInHelp: "Sign in to manage repositories, backups, and storage destinations.",
+  signOut: "Sign out",
+  username: "Username",
+  password: "Password",
+  confirmPassword: "Confirm password",
+  passwordsDoNotMatch: "Passwords do not match.",
+  secureSetup: "Secure initial setup",
+  secureSetupHelp: "Create the first administrator before BackMyGit can be used.",
+  bootstrapToken: "One-time setup token",
+  bootstrapTokenHelp: "Read the token from the application data volume:",
+  createAdministrator: "Create administrator",
 };
 
 const es: typeof en = {
@@ -479,6 +491,18 @@ const es: typeof en = {
   githubRepository: "Repositorio de GitHub",
   documentation: "README y documentación",
   readmeDescription: "Instalación, configuración y resumen del proyecto",
+  signIn: "Iniciar sesión",
+  signInHelp: "Accede para gestionar repositorios, copias y destinos de almacenamiento.",
+  signOut: "Cerrar sesión",
+  username: "Usuario",
+  password: "Contraseña",
+  confirmPassword: "Confirmar contraseña",
+  passwordsDoNotMatch: "Las contraseñas no coinciden.",
+  secureSetup: "Configuración inicial segura",
+  secureSetupHelp: "Crea el primer administrador antes de utilizar BackMyGit.",
+  bootstrapToken: "Token de configuración de un solo uso",
+  bootstrapTokenHelp: "Lee el token desde el volumen de datos de la aplicación:",
+  createAdministrator: "Crear administrador",
 };
 
 const stored = localStorage.getItem("backmygit-language");

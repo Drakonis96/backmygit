@@ -14,6 +14,8 @@ if (!base || !backupRoot || !databasePath)
   );
 
 const checks = [];
+let sessionCookie = "";
+let csrfToken = "";
 const ok = (name, condition, detail = "") => {
   if (!condition)
     throw new Error(`${name} failed${detail ? `: ${detail}` : ""}`);
@@ -25,10 +27,18 @@ async function request(url, options = {}) {
   const response = await fetch(`${base}/api${url}`, {
     ...options,
     headers: {
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...(!["GET", "HEAD", "OPTIONS"].includes(String(options.method || "GET").toUpperCase())
+        ? { "Content-Type": "application/json" }
+        : {}),
+      ...(sessionCookie ? { Cookie: sessionCookie } : {}),
+      ...(!["GET", "HEAD", "OPTIONS"].includes(String(options.method || "GET").toUpperCase()) && csrfToken
+        ? { "X-CSRF-Token": csrfToken }
+        : {}),
       ...options.headers,
     },
   });
+  const setCookie = response.headers.get("set-cookie");
+  if (setCookie) sessionCookie = setCookie.split(";", 1)[0];
   const contentType = response.headers.get("content-type") || "";
   const body = contentType.includes("json")
     ? await response.json()
@@ -59,6 +69,19 @@ async function waitForRun(id, expected, timeoutMs = 45_000) {
 
 const health = await request("/health");
 ok("health endpoint", health.status === "ok");
+const setupStatus = await request("/auth/setup-status");
+if (setupStatus.required) {
+  const bootstrapToken = (await fs.readFile(path.join(path.dirname(databasePath), "bootstrap-token"), "utf8")).trim();
+  const session = await json("/auth/setup", "POST", {
+    token: bootstrapToken,
+    username: "integration-admin",
+    password: "integration-test-password-2026",
+  });
+  csrfToken = session.csrfToken;
+  ok("secure initial administrator setup", session.user.role === "admin" && Boolean(sessionCookie));
+} else {
+  throw new Error("Integration test requires a fresh database without users");
+}
 
 const exact = await request("/github/search?q=drakonis96%20nodus");
 ok(
@@ -93,7 +116,7 @@ ok(
 const defaults = await request("/settings");
 const invalidTimezone = await fetch(`${base}/api/settings`, {
   method: "PUT",
-  headers: { "Content-Type": "application/json" },
+  headers: { "Content-Type": "application/json", Cookie: sessionCookie, "X-CSRF-Token": csrfToken },
   body: JSON.stringify({
     ...defaults,
     timezone: "Definitely/Not_A_Timezone",
@@ -202,6 +225,7 @@ ok(
 );
 const symlinkDownload = await fetch(
   `${base}/api/backups/${firstBackupId}/file?path=${encodeURIComponent(symlinkName)}`,
+  { headers: { Cookie: sessionCookie } },
 );
 ok("symlink download is blocked", symlinkDownload.status === 400);
 await fs.unlink(path.join(firstRun.destination, symlinkName));

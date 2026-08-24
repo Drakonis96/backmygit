@@ -9,6 +9,7 @@ import {
   LayoutDashboard,
   Menu,
   Moon,
+  LogOut,
   Settings,
   Sun,
   X,
@@ -18,6 +19,7 @@ import { useTranslation } from "react-i18next";
 import { NavLink, useLocation } from "react-router-dom";
 import { useToast } from "./Toast";
 import { usePreferences } from "../preferences";
+import { useAuth } from '../auth';
 
 const nav = [
   ["dashboard", "/", LayoutDashboard],
@@ -31,6 +33,7 @@ export default function Layout({ children }: { children: ReactNode }) {
   const { t, i18n } = useTranslation();
   const toast = useToast();
   const { settings, saveSettings, resolvedTheme } = usePreferences();
+  const { user, logout } = useAuth();
   const [open, setOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(
     localStorage.getItem("backmygit-sidebar") === "collapsed",
@@ -121,6 +124,7 @@ export default function Layout({ children }: { children: ReactNode }) {
             <b>BackMyGit</b>
           </div>
           <div className="header-actions">
+            <span className="current-user"><b>{user?.username}</b><small>{user?.role}</small></span>
             <button
               className="header-button"
               onClick={() => void language()}
@@ -129,6 +133,7 @@ export default function Layout({ children }: { children: ReactNode }) {
               <Languages />
               <span>{i18n.language.startsWith("es") ? "ES" : "EN"}</span>
             </button>
+            <button className="icon-button" onClick={() => void logout()} title={t('signOut')}><LogOut /></button>
             <button
               className="icon-button"
               onClick={() => void toggleTheme()}
