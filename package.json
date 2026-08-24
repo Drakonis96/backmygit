@@ -1,6 +1,6 @@
 {
   "name": "backmygit",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Self-hosted GitHub repository backup manager",
   "license": "GPL-3.0-only",
   "repository": {
@@ -14,15 +14,21 @@
     "build": "tsc -p tsconfig.server.json && vite build",
     "start": "node dist-server/index.js",
     "test": "vitest run",
-    "test:integration": "node scripts/integration-test.mjs",
+    "test:integration": "npm run build && node scripts/run-integration.mjs",
+    "test:migration": "npm run build && node scripts/migration-test.mjs",
+    "test:security": "npm run build && node scripts/security-test.mjs",
+    "test:crypt:container": "node scripts/run-crypt-container.mjs",
     "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit"
   },
   "dependencies": {
     "archiver": "^7.0.1",
+    "argon2": "^0.45.1",
     "better-sqlite3": "^11.8.1",
     "compression": "^1.7.5",
+    "cookie": "^1.1.1",
     "express": "^4.21.2",
+    "express-rate-limit": "^8.6.2",
     "helmet": "^8.0.0",
     "i18next": "^24.2.2",
     "lucide-react": "^0.475.0",

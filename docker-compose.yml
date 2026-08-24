@@ -1,3 +1,23 @@
+x-common-environment: &common-environment
+  BACKUP_ROOT: /backups
+  BACKUP_HOST_PATH: ${BACKUP_HOST_PATH:?Set BACKUP_HOST_PATH in .env}
+  DATA_DIR: /data
+  APP_VERSION: ${APP_VERSION:-0.2.0}
+  WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+  TRANSFER_CONCURRENCY: ${TRANSFER_CONCURRENCY:-2}
+  TRANSFER_MAX_ATTEMPTS: ${TRANSFER_MAX_ATTEMPTS:-5}
+  WORKER_LEASE_MS: ${WORKER_LEASE_MS:-300000}
+  MIN_FREE_BYTES: ${MIN_FREE_BYTES:-536870912}
+  GIT_TIMEOUT_MS: ${GIT_TIMEOUT_MS:-1800000}
+  RCLONE_TIMEOUT_MS: ${RCLONE_TIMEOUT_MS:-3600000}
+  ARTIFACT_ROOT: /backups/.artifacts
+  PUBLIC_URL: ${PUBLIC_URL:-}
+  ALLOWED_HOSTS: ${ALLOWED_HOSTS:-}
+  TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+  FORCE_HTTPS: ${FORCE_HTTPS:-false}
+  SESSION_IDLE_MS: ${SESSION_IDLE_MS:-1800000}
+  SESSION_ABSOLUTE_MS: ${SESSION_ABSOLUTE_MS:-43200000}
+
 services:
   app:
     build: .
@@ -5,26 +25,51 @@ services:
     container_name: backmygit
     restart: unless-stopped
     ports:
-      - "${APP_PORT:-8787}:8787"
+      # Loopback by default. Set APP_BIND_ADDRESS explicitly only when a trusted
+      # reverse proxy cannot reach the service through a Docker network.
+      - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-8787}:8787"
     environment:
-      BACKUP_ROOT: /backups
-      BACKUP_HOST_PATH: ${BACKUP_HOST_PATH:?Set BACKUP_HOST_PATH in .env}
-      DATA_DIR: /data
-      APP_VERSION: ${APP_VERSION:-0.1.0}
-      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
-      MIN_FREE_BYTES: ${MIN_FREE_BYTES:-536870912}
-      GIT_TIMEOUT_MS: ${GIT_TIMEOUT_MS:-1800000}
+      <<: *common-environment
+      PROCESS_ROLE: web
     volumes:
       # Actual Git backups live directly at this editable host path.
       - ${BACKUP_HOST_PATH}:/backups
       # Only application state (SQLite) uses a Docker-managed volume.
       - app-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=0700
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       start_period: 15s
       retries: 3
+
+  worker:
+    image: ${BACKMYGIT_IMAGE:-drakonis96/backmygit:latest}
+    restart: unless-stopped
+    command: ["node", "dist-server/worker-entry.js"]
+    environment:
+      <<: *common-environment
+      PROCESS_ROLE: worker
+    volumes:
+      - ${BACKUP_HOST_PATH}:/backups
+      - app-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,uid=1000,gid=1000,mode=0700
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 512
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      disable: true
 
 volumes:
   app-data:

@@ -9,11 +9,18 @@ import { branchDirectory, repositoryDirectory, timestampDirectory } from './path
 import { applyRetention } from './retention.js';
 import { directorySize } from './storage.js';
 import type { BackupMetadata } from './types.js';
+import { enqueueSnapshotReplicas } from './transfer-queue.js';
 
 const exec = promisify(execFile);
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 let active = 0;
 let timer: NodeJS.Timeout | undefined;
+let workerStarted = false;
+const workerId = `${process.pid}-${randomUUID()}`;
+
+function leaseExpiry(): string {
+  return new Date(Date.now() + config.workerLeaseMs).toISOString();
+}
 
 export function enqueueBackup(branchId: number, origin: 'manual' | 'automatic'): { id: string; queued: boolean } {
   const branch = db.prepare(`SELECT br.id, br.enabled, br.configured, r.enabled repository_enabled FROM branches br JOIN repositories r ON r.id=br.repository_id WHERE br.id=?`).get(branchId) as any;
@@ -23,7 +30,7 @@ export function enqueueBackup(branchId: number, origin: 'manual' | 'automatic'):
   try {
     db.prepare(`INSERT INTO runs(id,repository_id,branch_id,status,origin,created_at)
       SELECT ?,repository_id,id,'queued',?,? FROM branches WHERE id=?`).run(id, origin, new Date().toISOString(), branchId);
-    queueMicrotask(pump);
+    if (workerStarted) queueMicrotask(pump);
     return { id, queued: true };
   } catch (error: any) {
     if (String(error.code).includes('SQLITE_CONSTRAINT')) {
@@ -51,7 +58,14 @@ async function executeRun(runId: string) {
   const tmpPath = path.join(config.backupRoot, '.tmp', runId);
   const parent = path.join(config.backupRoot, repositoryDirectory(row.owner, row.repository), branchDirectory(row.branch));
   const destination = path.join(parent, timestampDirectory(started));
-  db.prepare("UPDATE runs SET status='running', started_at=?, attempts=attempts+1 WHERE id=?").run(started.toISOString(), runId);
+  db.prepare("UPDATE runs SET started_at=?, attempts=attempts+1,heartbeat_at=?,lease_expires_at=? WHERE id=? AND status='running' AND claimed_by=?")
+    .run(started.toISOString(), started.toISOString(), leaseExpiry(), runId, workerId);
+  const heartbeat = setInterval(() => {
+    const now = new Date().toISOString();
+    db.prepare("UPDATE runs SET heartbeat_at=?,lease_expires_at=? WHERE id=? AND status='running' AND claimed_by=?")
+      .run(now, leaseExpiry(), runId, workerId);
+  }, Math.min(30_000, Math.floor(config.workerLeaseMs / 3)));
+  heartbeat.unref();
   try {
     await fs.mkdir(path.dirname(tmpPath), { recursive: true });
     await fs.rm(tmpPath, { recursive: true, force: true });
@@ -94,10 +108,20 @@ async function executeRun(runId: string) {
     if (!exists.isDirectory()) throw new Error('Final backup destination is not a directory');
     const duration = completed.getTime() - started.getTime();
     db.transaction(() => {
-      db.prepare(`UPDATE runs SET status='success',completed_at=?,commit_sha=?,size_bytes=?,destination=?,error=NULL WHERE id=?`)
+      db.prepare(`UPDATE runs SET status='success',completed_at=?,commit_sha=?,size_bytes=?,destination=?,error=NULL,
+        claimed_by=NULL,lease_expires_at=NULL,heartbeat_at=NULL WHERE id=?`)
         .run(completed.toISOString(), commitSha, metadata.sizeBytes, destination, runId);
-      db.prepare(`INSERT INTO backups(repository_id,branch_id,run_id,path,commit_sha,started_at,completed_at,size_bytes,duration_ms,origin,status)
-        VALUES(?,?,?,?,?,?,?,?,?,?,'success')`).run(row.repository_id, row.branch_id, runId, destination, commitSha, started.toISOString(), completed.toISOString(), metadata.sizeBytes, duration, row.origin);
+      const snapshot = db.prepare(`INSERT INTO snapshots(repository_id,branch_id,run_id,commit_sha,started_at,completed_at,duration_ms,origin,status,metadata_json,created_at)
+        VALUES(?,?,?,?,?,?,?,?,'success',?,?) RETURNING id`).get(
+          row.repository_id, row.branch_id, runId, commitSha, started.toISOString(), completed.toISOString(), duration,
+          row.origin, JSON.stringify(metadata), completed.toISOString(),
+        ) as { id: number };
+      db.prepare(`INSERT INTO backup_replicas(id,snapshot_id,target_id,status,location,size_bytes,sha256,required,verified_at,created_at,updated_at)
+        VALUES(?,?,'local','verified',?,?,?,?,?,?,?)`).run(
+          randomUUID(), snapshot.id, destination, metadata.sizeBytes, commitSha, 1,
+          completed.toISOString(), completed.toISOString(), completed.toISOString(),
+        );
+      enqueueSnapshotReplicas(snapshot.id);
       db.prepare('UPDATE branches SET last_run_at=? WHERE id=?').run(completed.toISOString(), row.branch_id);
     })();
     try {
@@ -110,17 +134,35 @@ async function executeRun(runId: string) {
     await fs.rm(tmpPath, { recursive: true, force: true }).catch(() => undefined);
     const completed = new Date().toISOString();
     const detail = [error?.message, error?.stderr].filter(Boolean).join('\n').slice(0, 8000) || 'Unknown backup failure';
-    db.prepare("UPDATE runs SET status='failed',completed_at=?,destination=?,error=? WHERE id=?").run(completed, destination, detail, runId);
+    db.prepare(`UPDATE runs SET status='failed',completed_at=?,destination=?,error=?,
+      claimed_by=NULL,lease_expires_at=NULL,heartbeat_at=NULL WHERE id=?`).run(completed, destination, detail, runId);
+  } finally {
+    clearInterval(heartbeat);
   }
+}
+
+function claimNextRun(): { id: string } | undefined {
+  return db.transaction(() => {
+    const row = db.prepare("SELECT id FROM runs WHERE status='queued' ORDER BY created_at LIMIT 1").get() as { id: string } | undefined;
+    if (!row) return undefined;
+    const now = new Date().toISOString();
+    const claimed = db.prepare(`UPDATE runs SET status='running',claimed_by=?,heartbeat_at=?,lease_expires_at=?
+      WHERE id=? AND status='queued'`).run(workerId, now, leaseExpiry(), row.id);
+    return claimed.changes ? row : undefined;
+  })();
+}
+
+export function recoverExpiredRuns(): number {
+  const now = new Date().toISOString();
+  return db.prepare(`UPDATE runs SET status='queued',claimed_by=NULL,lease_expires_at=NULL,heartbeat_at=NULL,
+    started_at=NULL,error=COALESCE(error,'Recovered after an interrupted worker')
+    WHERE status='running' AND (lease_expires_at IS NULL OR lease_expires_at<=?)`).run(now).changes;
 }
 
 async function pump() {
   while (active < config.workerConcurrency) {
-    const row = db.prepare("SELECT id FROM runs WHERE status='queued' ORDER BY created_at LIMIT 1").get() as { id: string } | undefined;
+    const row = claimNextRun();
     if (!row) break;
-    // Claim synchronously before yielding so two pump calls cannot take the same job.
-    const claimed = db.prepare("UPDATE runs SET status='running' WHERE id=? AND status='queued'").run(row.id);
-    if (!claimed.changes) continue;
     active++;
     void executeRun(row.id).finally(() => { active--; queueMicrotask(pump); });
   }
@@ -128,13 +170,17 @@ async function pump() {
 
 export function startWorker() {
   if (timer) return;
+  recoverExpiredRuns();
+  workerStarted = true;
   timer = setInterval(pump, 1500);
   timer.unref();
   void pump();
 }
 
 export async function stopWorker(graceMs = 25_000) {
+  workerStarted = false;
   if (timer) clearInterval(timer);
+  timer = undefined;
   const deadline = Date.now() + graceMs;
   while (active > 0 && Date.now() < deadline) await wait(250);
 }

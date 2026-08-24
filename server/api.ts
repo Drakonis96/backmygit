@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { Request, Response, NextFunction } from "express";
@@ -23,6 +22,8 @@ import {
 } from "./types.js";
 import { isValidTimezone, searchTimezoneLocations } from "./timezones.js";
 import { enqueueBackup } from "./worker.js";
+import cloudApi from './cloud-api.js';
+import { audit } from './auth.js';
 
 const router = Router();
 const asyncRoute =
@@ -65,12 +66,14 @@ const retentionSchema = z.object({
   minimumToKeep: z.number().int().min(1).max(10000),
 });
 
+router.use('/cloud', cloudApi);
+
 router.get(
   "/health",
   asyncRoute(async (_req, res) => {
     db.prepare("SELECT 1").get();
-    await fs.access(config.backupRoot, fs.constants.R_OK | fs.constants.W_OK);
-    res.json({ status: "ok", version: config.appVersion });
+    await fs.access(config.backupRoot, config.processRole === 'web' ? fs.constants.R_OK : fs.constants.R_OK | fs.constants.W_OK);
+    res.json({ status: "ok", version: config.appVersion, role: config.processRole });
   }),
 );
 
@@ -114,10 +117,10 @@ router.get(
         `SELECT
     (SELECT COUNT(*) FROM repositories WHERE enabled=1) protectedRepositories,
     (SELECT COUNT(*) FROM branches WHERE enabled=1 AND configured=1) protectedBranches,
-    (SELECT COUNT(*) FROM backups WHERE status='success') totalBackups,
+    (SELECT COUNT(*) FROM backup_replicas WHERE target_id='local' AND status='verified') totalBackups,
     (SELECT COUNT(*) FROM runs WHERE status='success') successfulBackups,
     (SELECT COUNT(*) FROM runs WHERE status='failed') failedBackups,
-    (SELECT COALESCE(SUM(size_bytes),0) FROM backups WHERE status='success') totalBytes,
+    (SELECT COALESCE(SUM(size_bytes),0) FROM backup_replicas WHERE target_id='local' AND status='verified') totalBytes,
     (SELECT MAX(completed_at) FROM runs WHERE status='success') lastCompleted,
     (SELECT MIN(next_run_at) FROM branches WHERE enabled=1 AND configured=1) nextScheduled`,
       )
@@ -145,9 +148,9 @@ router.get("/repositories", (_req, res) => {
     .prepare(
       `SELECT r.*,
     (SELECT COUNT(*) FROM branches br WHERE br.repository_id=r.id AND br.configured=1) branchCount,
-    (SELECT COUNT(*) FROM backups b WHERE b.repository_id=r.id) backupCount,
-    (SELECT COALESCE(SUM(b.size_bytes),0) FROM backups b WHERE b.repository_id=r.id) sizeBytes,
-    (SELECT MAX(b.completed_at) FROM backups b WHERE b.repository_id=r.id) lastBackup,
+    (SELECT COUNT(*) FROM snapshots s JOIN backup_replicas lr ON lr.snapshot_id=s.id AND lr.target_id='local' AND lr.status='verified' WHERE s.repository_id=r.id) backupCount,
+    (SELECT COALESCE(SUM(lr.size_bytes),0) FROM snapshots s JOIN backup_replicas lr ON lr.snapshot_id=s.id AND lr.target_id='local' AND lr.status='verified' WHERE s.repository_id=r.id) sizeBytes,
+    (SELECT MAX(s.completed_at) FROM snapshots s JOIN backup_replicas lr ON lr.snapshot_id=s.id AND lr.target_id='local' AND lr.status='verified' WHERE s.repository_id=r.id) lastBackup,
     (SELECT MIN(br.next_run_at) FROM branches br WHERE br.repository_id=r.id AND br.enabled=1 AND br.configured=1) nextBackup,
     (SELECT status FROM runs ru WHERE ru.repository_id=r.id ORDER BY ru.created_at DESC LIMIT 1) lastStatus
     FROM repositories r ORDER BY r.owner COLLATE NOCASE,r.name COLLATE NOCASE`,
@@ -236,9 +239,9 @@ router.get("/repositories/:id", (req, res) => {
   const row = db
     .prepare(
       `SELECT r.*,
-    (SELECT COUNT(*) FROM backups b WHERE b.repository_id=r.id) backupCount,
-    (SELECT COALESCE(SUM(b.size_bytes),0) FROM backups b WHERE b.repository_id=r.id) sizeBytes,
-    (SELECT MAX(b.completed_at) FROM backups b WHERE b.repository_id=r.id) lastBackup,
+    (SELECT COUNT(*) FROM snapshots s JOIN backup_replicas lr ON lr.snapshot_id=s.id AND lr.target_id='local' AND lr.status='verified' WHERE s.repository_id=r.id) backupCount,
+    (SELECT COALESCE(SUM(lr.size_bytes),0) FROM snapshots s JOIN backup_replicas lr ON lr.snapshot_id=s.id AND lr.target_id='local' AND lr.status='verified' WHERE s.repository_id=r.id) sizeBytes,
+    (SELECT MAX(s.completed_at) FROM snapshots s JOIN backup_replicas lr ON lr.snapshot_id=s.id AND lr.target_id='local' AND lr.status='verified' WHERE s.repository_id=r.id) lastBackup,
     (SELECT MIN(br.next_run_at) FROM branches br WHERE br.repository_id=r.id AND br.enabled=1 AND br.configured=1) nextBackup
     FROM repositories r WHERE r.id=?`,
     )
@@ -247,16 +250,21 @@ router.get("/repositories/:id", (req, res) => {
     throw Object.assign(new Error("Repository not found"), { status: 404 });
   const branches = db
     .prepare(
-      `SELECT br.*,COUNT(b.id) backupCount,COALESCE(SUM(b.size_bytes),0) sizeBytes,MAX(b.completed_at) lastBackup,
+      `SELECT br.*,
+    (SELECT COUNT(*) FROM snapshots s JOIN backup_replicas lr ON lr.snapshot_id=s.id AND lr.target_id='local' AND lr.status='verified' WHERE s.branch_id=br.id) backupCount,
+    (SELECT COALESCE(SUM(lr.size_bytes),0) FROM snapshots s JOIN backup_replicas lr ON lr.snapshot_id=s.id AND lr.target_id='local' AND lr.status='verified' WHERE s.branch_id=br.id) sizeBytes,
+    (SELECT MAX(s.completed_at) FROM snapshots s JOIN backup_replicas lr ON lr.snapshot_id=s.id AND lr.target_id='local' AND lr.status='verified' WHERE s.branch_id=br.id) lastBackup,
     (SELECT status FROM runs ru WHERE ru.branch_id=br.id ORDER BY ru.created_at DESC LIMIT 1) lastStatus
-    FROM branches br LEFT JOIN backups b ON b.branch_id=br.id WHERE br.repository_id=? GROUP BY br.id ORDER BY br.configured DESC,br.name`,
+    FROM branches br WHERE br.repository_id=? ORDER BY br.configured DESC,br.name`,
     )
     .all(repositoryId) as any[];
   const history = db
     .prepare(
       `SELECT ru.*,br.name branch FROM runs ru JOIN branches br ON br.id=ru.branch_id WHERE ru.repository_id=? ORDER BY ru.created_at DESC LIMIT 15`,
     )
-    .all(repositoryId);
+    .all(repositoryId) as any[];
+  if (req.user?.role !== 'admin')
+    for (const run of history) delete run.destination;
   res.json({
     ...row,
     schedule: JSON.parse(row.schedule_json),
@@ -399,10 +407,10 @@ router.post("/backups/run", (req, res) => {
 });
 
 router.get("/backups", (req, res) => {
-  const clauses: string[] = ["b.status='success'"];
+  const clauses: string[] = ["s.status='success'", "lr.target_id='local'", "lr.status='verified'"];
   const params: any[] = [];
   if (req.query.repositoryId) {
-    clauses.push("b.repository_id=?");
+    clauses.push("s.repository_id=?");
     params.push(id(String(req.query.repositoryId)));
   }
   if (req.query.branch) {
@@ -411,10 +419,14 @@ router.get("/backups", (req, res) => {
   }
   const items = db
     .prepare(
-      `SELECT b.*,r.owner,r.name repository,br.name branch FROM backups b JOIN repositories r ON r.id=b.repository_id
-    JOIN branches br ON br.id=b.branch_id WHERE ${clauses.join(" AND ")} ORDER BY b.completed_at DESC`,
+      `SELECT s.*,lr.location path,lr.size_bytes,r.owner,r.name repository,br.name branch
+    FROM snapshots s JOIN backup_replicas lr ON lr.snapshot_id=s.id
+    JOIN repositories r ON r.id=s.repository_id JOIN branches br ON br.id=s.branch_id
+    WHERE ${clauses.join(" AND ")} ORDER BY s.completed_at DESC`,
     )
-    .all(...params);
+    .all(...params) as any[];
+  if (req.user?.role !== 'admin')
+    for (const item of items) delete item.path;
   res.json({ items });
 });
 
@@ -422,7 +434,8 @@ router.get(
   "/backups/:id/contents",
   asyncRoute(async (req, res) => {
     const backup = db
-      .prepare("SELECT path FROM backups WHERE id=?")
+      .prepare(`SELECT lr.location path FROM snapshots s JOIN backup_replicas lr
+        ON lr.snapshot_id=s.id AND lr.target_id='local' AND lr.status='verified' WHERE s.id=?`)
       .get(id(String(req.params.id))) as any;
     if (!backup)
       throw Object.assign(new Error("Backup not found"), { status: 404 });
@@ -466,7 +479,9 @@ router.get(
   asyncRoute(async (req, res) => {
     const backup = db
       .prepare(
-        `SELECT b.path,r.owner,r.name repository,br.name branch FROM backups b JOIN repositories r ON r.id=b.repository_id JOIN branches br ON br.id=b.branch_id WHERE b.id=?`,
+        `SELECT lr.location path,r.owner,r.name repository,br.name branch FROM snapshots s
+        JOIN backup_replicas lr ON lr.snapshot_id=s.id AND lr.target_id='local' AND lr.status='verified'
+        JOIN repositories r ON r.id=s.repository_id JOIN branches br ON br.id=s.branch_id WHERE s.id=?`,
       )
       .get(id(String(req.params.id))) as any;
     if (!backup)
@@ -487,7 +502,8 @@ router.get(
   "/backups/:id/file",
   asyncRoute(async (req, res) => {
     const backup = db
-      .prepare("SELECT path FROM backups WHERE id=?")
+      .prepare(`SELECT lr.location path FROM snapshots s JOIN backup_replicas lr
+        ON lr.snapshot_id=s.id AND lr.target_id='local' AND lr.status='verified' WHERE s.id=?`)
       .get(id(String(req.params.id))) as any;
     if (!backup)
       throw Object.assign(new Error("Backup not found"), { status: 404 });
@@ -508,18 +524,25 @@ router.get(
 router.delete(
   "/backups/:id",
   asyncRoute(async (req, res) => {
-    await deleteBackupRecord(id(String(req.params.id)));
+    const snapshotId = id(String(req.params.id));
+    const deleteRemote = req.query.remote === 'true';
+    await deleteBackupRecord(snapshotId, deleteRemote);
+    audit('backup.deleted', req, { deleteRemote }, 'snapshot', String(snapshotId));
     res.json({ ok: true });
   }),
 );
 router.post(
   "/backups/delete",
   asyncRoute(async (req, res) => {
-    const ids = z
-      .object({ ids: z.array(z.number().int().positive()).min(1).max(100) })
-      .parse(req.body).ids;
-    for (const backupId of ids) await deleteBackupRecord(backupId);
-    res.json({ ok: true, deleted: ids.length });
+    const body = z.object({
+      ids: z.array(z.number().int().positive()).min(1).max(100),
+      deleteRemote: z.boolean().default(false),
+    }).parse(req.body);
+    for (const backupId of body.ids) {
+      await deleteBackupRecord(backupId, body.deleteRemote);
+      audit('backup.deleted', req, { deleteRemote: body.deleteRemote }, 'snapshot', String(backupId));
+    }
+    res.json({ ok: true, deleted: body.ids.length });
   }),
 );
 
@@ -575,7 +598,9 @@ router.get("/history", (req, res) => {
       `SELECT ru.*,r.owner,r.name repository,br.name branch FROM runs ru JOIN repositories r ON r.id=ru.repository_id
     JOIN branches br ON br.id=ru.branch_id WHERE ${where} ORDER BY ru.created_at DESC LIMIT ? OFFSET ?`,
     )
-    .all(...params, pageSize, (page - 1) * pageSize);
+    .all(...params, pageSize, (page - 1) * pageSize) as any[];
+  if (req.user?.role !== 'admin')
+    for (const item of items) delete item.destination;
   res.json({
     items,
     page,
@@ -594,7 +619,14 @@ router.delete("/history", (req, res) => {
 
 router.get(
   "/storage",
-  asyncRoute(async (_req, res) => res.json(await storageStats())),
+  asyncRoute(async (req, res) => {
+    const stats = await storageStats() as any;
+    if (req.user?.role !== 'admin') {
+      delete stats.root;
+      delete stats.hostPath;
+    }
+    res.json(stats);
+  }),
 );
 router.post(
   "/storage/reconcile",
@@ -656,7 +688,7 @@ router.delete(
   }),
 );
 
-router.use((error: any, _req: Request, res: Response, _next: NextFunction) => {
+router.use((error: any, req: Request, res: Response, _next: NextFunction) => {
   const validation = error instanceof z.ZodError;
   const status = validation ? 400 : Number(error.status || 500);
   if (status >= 500) console.error(error);
@@ -666,7 +698,7 @@ router.use((error: any, _req: Request, res: Response, _next: NextFunction) => {
       : error.message || "Unexpected error",
     code: validation ? "VALIDATION_ERROR" : error.code,
     details: validation ? error.flatten() : undefined,
-    requestId: randomUUID(),
+    requestId: req.requestId,
   });
 });
 

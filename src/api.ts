@@ -8,6 +8,9 @@ export class ApiError extends Error {
   }
 }
 
+let csrfToken: string | undefined;
+export function setCsrfToken(value?: string) { csrfToken = value; }
+
 export async function api<T>(
   url: string,
   options: RequestInit = {},
@@ -17,7 +20,12 @@ export async function api<T>(
     response = await fetch(`/api${url}`, {
       ...options,
       headers: {
-        ...(options.body ? { "Content-Type": "application/json" } : {}),
+        ...(!['GET', 'HEAD', 'OPTIONS'].includes(String(options.method || 'GET').toUpperCase())
+          ? { "Content-Type": "application/json" }
+          : {}),
+        ...(!['GET', 'HEAD', 'OPTIONS'].includes(String(options.method || 'GET').toUpperCase()) && csrfToken
+          ? { 'X-CSRF-Token': csrfToken }
+          : {}),
         ...options.headers,
       },
     });
@@ -40,6 +48,8 @@ export async function api<T>(
     } catch {
       /* non-JSON response */
     }
+    if (response.status === 401 && !url.startsWith('/auth/'))
+      window.dispatchEvent(new Event('backmygit:unauthorized'));
     throw new ApiError(message, response.status, code);
   }
   return response.status === 204 ? (undefined as T) : response.json();
