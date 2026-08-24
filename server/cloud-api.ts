@@ -11,6 +11,8 @@ import { assertRemoteName, obscureRcloneSecret } from './rclone.js';
 import { normalizeRemoteSubpath } from './rclone-config.js';
 import { deleteSecret, deleteSecrets, getSecret, putSecret } from './secrets.js';
 import { retryTransfer } from './transfer-queue.js';
+import { enqueueRestore } from './transfer-queue.js';
+import { sealRecoveryKit } from './recovery-kit.js';
 
 const router = Router();
 const asyncRoute = (fn: (req: Request, res: Response, next: NextFunction) => Promise<unknown>) =>
@@ -389,6 +391,68 @@ router.get('/transfers', (req, res) => {
     JOIN branches br ON br.id=s.branch_id ORDER BY j.created_at DESC LIMIT ?`).all(limit);
   res.json({ items: rows });
 });
+
+router.get('/recoverable', (_req, res) => {
+  const rows = db.prepare(`SELECT s.id,s.commit_sha,s.completed_at,repo.owner,repo.name repository,br.name branch,
+    r.target_id,t.name target_name,c.name connection_name,r.size_bytes
+    FROM snapshots s JOIN backup_replicas local ON local.snapshot_id=s.id AND local.target_id='local' AND local.status='deleted'
+    JOIN backup_replicas r ON r.snapshot_id=s.id AND r.target_id!='local' AND r.status='verified'
+    JOIN storage_targets t ON t.id=r.target_id JOIN cloud_connections c ON c.id=t.connection_id
+    JOIN repositories repo ON repo.id=s.repository_id JOIN branches br ON br.id=s.branch_id
+    ORDER BY s.completed_at DESC LIMIT 200`).all();
+  res.json({ items: rows });
+});
+
+router.post('/recoverable/:id/restore', (req, res) => {
+  const snapshotId = z.coerce.number().int().positive().parse(req.params.id);
+  const body = z.object({ targetId: identifier.optional() }).parse(req.body || {});
+  const queued = enqueueRestore(snapshotId, body.targetId);
+  audit('backup.restore_queued', req, { targetId: queued.targetId }, 'snapshot', String(snapshotId));
+  res.status(202).json(queued);
+});
+
+router.get('/audit', (req, res) => {
+  if (req.user?.role !== 'admin') throw Object.assign(new Error('Insufficient permissions'), { status: 403 });
+  const limit = z.coerce.number().int().min(1).max(200).default(50).parse(req.query.limit);
+  const rows = db.prepare(`SELECT a.id,a.action,a.target_type,a.target_id,a.ip_address,a.created_at,u.username
+    FROM audit_events a LEFT JOIN users u ON u.id=a.user_id ORDER BY a.created_at DESC LIMIT ?`).all(limit);
+  res.json({ items: rows });
+});
+
+router.post('/recovery-kit', asyncRoute(async (req, res) => {
+  if (req.user?.role !== 'admin') throw Object.assign(new Error('Insufficient permissions'), { status: 403 });
+  const body = z.object({ passphrase: z.string().min(12).max(1024) }).parse(req.body);
+  const connections = db.prepare("SELECT id,name,provider,remote_name FROM cloud_connections WHERE managed=1").all() as any[];
+  const targets = db.prepare("SELECT id,connection_id,name,root_path,encryption_mode FROM storage_targets WHERE kind='rclone'").all() as any[];
+  const exportedConnections = [];
+  for (const connection of connections) {
+    const rcloneConfig = await getSecret('connection', connection.id, 'rclone-config');
+    if (rcloneConfig) exportedConnections.push({
+      name: connection.name, provider: connection.provider, remoteName: connection.remote_name, rcloneConfig,
+    });
+  }
+  const exportedTargets = [];
+  for (const target of targets) {
+    const crypt = target.encryption_mode === 'crypt' ? await getSecret('target', target.id, 'crypt') : undefined;
+    exportedTargets.push({
+      connectionRemoteName: connections.find(connection => connection.id === target.connection_id)?.remote_name,
+      name: target.name, rootPath: target.root_path, encryptionMode: target.encryption_mode, crypt,
+    });
+  }
+  const envelope = await sealRecoveryKit(body.passphrase, {
+    schemaVersion: 1,
+    application: 'BackMyGit',
+    createdAt: new Date().toISOString(),
+    warning: 'Keep this file and its passphrase separate. It contains cloud and encryption recovery material.',
+    connections: exportedConnections,
+    targets: exportedTargets,
+  });
+  audit('cloud.recovery_kit_exported', req, { connections: exportedConnections.length, targets: exportedTargets.length }, 'recovery_kit');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Content-Disposition', `attachment; filename="backmygit-recovery-${new Date().toISOString().slice(0, 10)}.json"`);
+  res.send(`${JSON.stringify(envelope, null, 2)}\n`);
+}));
 
 router.post('/transfers/:id/retry', (req, res) => {
   const jobId = identifier.parse(req.params.id);

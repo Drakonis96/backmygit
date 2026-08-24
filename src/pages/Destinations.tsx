@@ -1,4 +1,4 @@
-import { ArrowUp, Check, Cloud, Folder, HardDrive, Plus, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react';
+import { ArrowUp, Check, Cloud, Download, Folder, HardDrive, KeyRound, Plus, RefreshCw, RotateCcw, ShieldCheck, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ApiError, api, mutate } from '../api';
@@ -18,9 +18,11 @@ type Target = {
 };
 type FolderItem = { name: string; path: string; id?: string };
 type Transfer = {
-  id: string; status: string; attempts: number; bytes_total?: number; bytes_transferred: number; speed_bps?: number;
+  id: string; operation: string; status: string; attempts: number; bytes_total?: number; bytes_transferred: number; speed_bps?: number;
   error?: string; target_name: string; connection_name: string; owner: string; repository: string; branch: string; commit_sha: string;
 };
+type Recoverable = { id: number; commit_sha: string; completed_at: string; owner: string; repository: string; branch: string; target_id: string; target_name: string; connection_name: string; size_bytes: number };
+type AuditEvent = { id: number; action: string; ip_address?: string; created_at: string; username?: string };
 
 const emptyConnection = { name: '', provider: 'external', remoteName: '', username: '', password: '', accessKeyId: '', secretAccessKey: '', endpoint: '', region: '', s3Provider: 'Other', clientId: '', clientSecret: '' };
 
@@ -34,6 +36,8 @@ export default function Destinations() {
   const targets = useApi<{ items: Target[] }>('/cloud/targets', 15_000);
   const assignments = useApi<{ targetIds: string[] }>('/cloud/assignments/global');
   const transfers = useApi<{ items: Transfer[] }>('/cloud/transfers?limit=50', 3_000);
+  const recoverable = useApi<{ items: Recoverable[] }>('/cloud/recoverable', 10_000);
+  const auditEvents = useApi<{ items: AuditEvent[] }>(canManage ? '/cloud/audit?limit=20' : null, 15_000);
   const [connectionOpen, setConnectionOpen] = useState(false);
   const [connectionForm, setConnectionForm] = useState(emptyConnection);
   const [targetConnection, setTargetConnection] = useState<Connection>();
@@ -45,6 +49,9 @@ export default function Destinations() {
   const [selected, setSelected] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
+  const [recoveryPassphrase, setRecoveryPassphrase] = useState('');
+  const [recoveryConfirmation, setRecoveryConfirmation] = useState('');
   useEffect(() => { if (assignments.data) setSelected(assignments.data.targetIds); }, [assignments.data]);
   useEffect(() => {
     const result = new URLSearchParams(window.location.search).get('oauth');
@@ -139,10 +146,28 @@ export default function Destinations() {
     try { await mutate(`/cloud/transfers/${transfer.id}/retry`, 'POST'); toast(t('transferQueued')); await transfers.refresh(); }
     catch (caught) { fail(caught); } finally { setBusy(false); }
   };
+  const restore = async (item: Recoverable) => {
+    setBusy(true); setError('');
+    try {
+      await mutate(`/cloud/recoverable/${item.id}/restore`, 'POST', { targetId: item.target_id });
+      toast(t('restoreQueued')); await Promise.all([recoverable.refresh(), transfers.refresh()]);
+    } catch (caught) { fail(caught); } finally { setBusy(false); }
+  };
+  const downloadRecoveryKit = async () => {
+    if (recoveryPassphrase !== recoveryConfirmation) { setError(t('passphrasesDoNotMatch')); toast(t('passphrasesDoNotMatch'), 'error'); return; }
+    setBusy(true); setError('');
+    try {
+      const envelope = await mutate<Record<string, unknown>>('/cloud/recovery-kit', 'POST', { passphrase: recoveryPassphrase });
+      const url = URL.createObjectURL(new Blob([`${JSON.stringify(envelope, null, 2)}\n`], { type: 'application/json' }));
+      const link = document.createElement('a'); link.href = url; link.download = `backmygit-recovery-${new Date().toISOString().slice(0, 10)}.json`; link.click();
+      URL.revokeObjectURL(url); setRecoveryOpen(false); setRecoveryPassphrase(''); setRecoveryConfirmation(''); toast(t('recoveryKitCreated'));
+      await auditEvents.refresh();
+    } catch (caught) { fail(caught); } finally { setBusy(false); }
+  };
 
   if (connections.loading || targets.loading || assignments.loading) return <Loading />;
   return <>
-    <PageHeader title={t('cloudDestinations')} description={t('cloudDestinationsHelp')} actions={canManage ? <button className="button primary" onClick={() => { setError(''); setConnectionOpen(true); }}><Plus />{t('addConnection')}</button> : undefined} />
+    <PageHeader title={t('cloudDestinations')} description={t('cloudDestinationsHelp')} actions={canManage ? <><button className="button secondary" onClick={() => setRecoveryOpen(true)}><KeyRound />{t('recoveryKit')}</button><button className="button primary" onClick={() => { setError(''); setConnectionOpen(true); }}><Plus />{t('addConnection')}</button></> : undefined} />
     {error && <div className="alert-banner"><Cloud /><div><b>{t('cloudOperationFailed')}</b><span>{error}</span></div></div>}
     <Card title={t('connections')}>
       {!connections.data?.items.length ? <Empty icon={<Cloud />} title={t('noConnections')} text={t('noConnectionsHelp')} /> : <div className="destination-grid">
@@ -171,10 +196,16 @@ export default function Destinations() {
         {transfers.data.items.map(transfer => {
           const total = transfer.bytes_total || 0;
           const percent = total ? Math.min(100, transfer.bytes_transferred / total * 100) : 0;
-          return <div className="transfer-row" key={transfer.id}><span className="target-icon"><Cloud /></span><span className="transfer-main"><b>{transfer.owner}/{transfer.repository} · {transfer.branch}</b><small>{transfer.target_name} · {transfer.commit_sha.slice(0, 8)} · {t('attempt')} {transfer.attempts}</small><i><em style={{ width: `${percent}%` }} /></i>{transfer.error && <small className="transfer-error">{transfer.error}</small>}</span><span className="transfer-state"><StatusBadge status={transfer.status} />{canManage && transfer.status === 'failed' && <button className="button secondary" disabled={busy} onClick={() => void retry(transfer)}>{t('retryTransfer')}</button>}</span></div>;
+          return <div className="transfer-row" key={transfer.id}><span className="target-icon"><Cloud /></span><span className="transfer-main"><b>{transfer.owner}/{transfer.repository} · {transfer.branch}</b><small>{t(transfer.operation)} · {transfer.target_name} · {transfer.commit_sha.slice(0, 8)} · {t('attempt')} {transfer.attempts}</small><i><em style={{ width: `${percent}%` }} /></i>{transfer.error && <small className="transfer-error">{transfer.error}</small>}</span><span className="transfer-state"><StatusBadge status={transfer.status} />{canManage && transfer.status === 'failed' && <button className="button secondary" disabled={busy} onClick={() => void retry(transfer)}>{t('retryTransfer')}</button>}</span></div>;
         })}
       </div>}
     </Card>
+
+    <Card title={t('recoverableBackups')}>
+      {!recoverable.data?.items.length ? <Empty icon={<RotateCcw />} title={t('noRecoverableBackups')} text={t('noRecoverableBackupsHelp')} /> : <div className="transfer-list">{recoverable.data.items.map(item => <div className="transfer-row" key={`${item.id}-${item.target_id}`}><span className="target-icon"><RotateCcw /></span><span className="transfer-main"><b>{item.owner}/{item.repository} · {item.branch}</b><small>{item.connection_name} · {item.target_name} · {item.commit_sha.slice(0, 8)}</small></span>{canManage && <button className="button secondary" disabled={busy} onClick={() => void restore(item)}><Download />{t('restore')}</button>}</div>)}</div>}
+    </Card>
+
+    {canManage && <Card title={t('securityAudit')}><div className="audit-list">{auditEvents.data?.items.map(event => <div className="audit-row" key={event.id}><b>{event.action}</b><span>{event.username || 'system'} · {new Date(event.created_at).toLocaleString()}</span><code>{event.ip_address || '—'}</code></div>)}</div></Card>}
 
     <Modal open={connectionOpen} onClose={() => setConnectionOpen(false)} title={t('addConnection')} footer={<><button className="button secondary" onClick={() => setConnectionOpen(false)}>{t('cancel')}</button><button className="button primary" disabled={busy} onClick={createConnection}>{busy ? t('saving') : t('createConnection')}</button></>}>
       <div className="form-grid cloud-form">
@@ -193,6 +224,9 @@ export default function Destinations() {
 
     <Modal open={browseOpen} onClose={() => setBrowseOpen(false)} title={t('chooseRemoteFolder')} footer={<><button className="button secondary" onClick={() => setBrowseOpen(false)}>{t('cancel')}</button><button className="button primary" onClick={() => { setTargetForm({ ...targetForm, rootPath: browsePath }); setBrowseOpen(false); }}>{t('selectThisFolder')}</button></>}>
       <div className="folder-browser"><code>/{browsePath}</code><button className="folder-row" disabled={!browsePath || browseBusy} onClick={() => void loadFolders(browsePath.split('/').slice(0, -1).join('/'))}><ArrowUp /><span>{t('parentFolder')}</span></button>{browseBusy ? <Loading /> : folders.map(folder => <button className="folder-row" key={`${folder.id || ''}-${folder.path}`} onClick={() => void loadFolders(folder.path)}><Folder /><span>{folder.name}</span></button>)}</div>
+    </Modal>
+    <Modal open={recoveryOpen} onClose={() => setRecoveryOpen(false)} title={t('createRecoveryKit')} footer={<><button className="button secondary" onClick={() => setRecoveryOpen(false)}>{t('cancel')}</button><button className="button primary" disabled={busy || recoveryPassphrase.length < 12} onClick={() => void downloadRecoveryKit()}><Download />{t('download')}</button></>}>
+      <p className="help-text">{t('recoveryKitHelp')}</p><div className="form-grid cloud-form"><label className="full"><span>{t('recoveryPassphrase')}</span><input type="password" autoComplete="new-password" value={recoveryPassphrase} onChange={event => setRecoveryPassphrase(event.target.value)} /></label><label className="full"><span>{t('confirmPassword')}</span><input type="password" autoComplete="new-password" value={recoveryConfirmation} onChange={event => setRecoveryConfirmation(event.target.value)} /></label></div>
     </Modal>
   </>;
 }

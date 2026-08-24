@@ -29,7 +29,7 @@ export async function applyRetention(branchId: number): Promise<number> {
   for (const backup of deletions) {
     // Path validation and empty-parent cleanup are centralized here.
     if (path.basename(backup.path).startsWith('.')) continue;
-    await deleteBackupRecord(backup.id);
+    await deleteBackupRecord(backup.id, true);
     removed++;
   }
   return removed;

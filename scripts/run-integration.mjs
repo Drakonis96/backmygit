@@ -34,7 +34,8 @@ else if (command === 'obscure') {
   process.stdin.on('data', chunk => { value += chunk; });
   process.stdin.on('end', () => process.stdout.write('obscured-' + value.trim() + '\\n'));
 } else if (command === 'copyto') {
-  const source = rest[0]; const destination = remoteFile(rest[1]);
+  const source = rest[0].includes(':') ? remoteFile(rest[0]) : rest[0];
+  const destination = rest[1].includes(':') ? remoteFile(rest[1]) : rest[1];
   fs.mkdirSync(path.dirname(destination), { recursive: true });
   fs.copyFileSync(source, destination);
   const size = fs.statSync(source).size;

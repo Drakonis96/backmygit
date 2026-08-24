@@ -32,12 +32,47 @@ export function enqueueSnapshotReplicas(snapshotId: number): number {
   return queued;
 }
 
-export interface ClaimedTransfer { id: string; replica_id: string; attempts: number }
+export interface ClaimedTransfer { id: string; replica_id: string; attempts: number; operation: 'upload' | 'verify' | 'download' | 'delete' }
+
+export function enqueueReplicaDeletion(replicaId: string): boolean {
+  const now = new Date().toISOString();
+  return db.transaction(() => {
+    const replica = db.prepare("SELECT id FROM backup_replicas WHERE id=? AND target_id!='local' AND status IN ('verified','failed')").get(replicaId);
+    if (!replica) return false;
+    const inserted = db.prepare(`INSERT OR IGNORE INTO transfer_jobs(id,replica_id,operation,status,priority,attempts,bytes_transferred,created_at,updated_at)
+      VALUES(?,?,'delete','queued',10,0,0,?,?)`).run(randomUUID(), replicaId, now, now);
+    if (!inserted.changes) return false;
+    db.prepare("UPDATE backup_replicas SET status='deleting',last_error=NULL,updated_at=? WHERE id=?").run(now, replicaId);
+    return true;
+  })();
+}
+
+export function enqueueSnapshotRemoteDeletions(snapshotId: number): number {
+  const replicas = db.prepare("SELECT id FROM backup_replicas WHERE snapshot_id=? AND target_id!='local' AND status IN ('verified','failed')")
+    .all(snapshotId) as Array<{ id: string }>;
+  return replicas.reduce((count, replica) => count + (enqueueReplicaDeletion(replica.id) ? 1 : 0), 0);
+}
+
+export function enqueueRestore(snapshotId: number, targetId?: string): { jobId: string; targetId: string } {
+  const replica = db.prepare(`SELECT r.id,r.target_id FROM backup_replicas r
+    JOIN backup_replicas local ON local.snapshot_id=r.snapshot_id AND local.target_id='local' AND local.status='deleted'
+    WHERE r.snapshot_id=? AND r.target_id!='local' AND r.status='verified' ${targetId ? 'AND r.target_id=?' : ''}
+    ORDER BY r.verified_at DESC LIMIT 1`).get(...(targetId ? [snapshotId, targetId] : [snapshotId])) as { id: string; target_id: string } | undefined;
+  if (!replica) throw Object.assign(new Error('No verified remote replica is available for restoration'), { status: 409 });
+  const existing = db.prepare("SELECT id FROM transfer_jobs WHERE replica_id=? AND operation='download' AND status IN ('queued','running','retry_wait')")
+    .get(replica.id) as { id: string } | undefined;
+  if (existing) return { jobId: existing.id, targetId: replica.target_id };
+  const jobId = randomUUID();
+  const now = new Date().toISOString();
+  db.prepare(`INSERT INTO transfer_jobs(id,replica_id,operation,status,priority,attempts,bytes_total,bytes_transferred,created_at,updated_at)
+    SELECT ?,id,'download','queued',20,0,size_bytes,0,?,? FROM backup_replicas WHERE id=?`).run(jobId, now, now, replica.id);
+  return { jobId, targetId: replica.target_id };
+}
 
 export function claimTransfer(workerId: string): ClaimedTransfer | undefined {
   return db.transaction(() => {
     const now = new Date().toISOString();
-    const row = db.prepare(`SELECT id,replica_id,attempts FROM transfer_jobs
+    const row = db.prepare(`SELECT id,replica_id,attempts,operation FROM transfer_jobs
       WHERE (status='queued' OR (status='retry_wait' AND next_attempt_at<=?))
       ORDER BY priority DESC,created_at LIMIT 1`).get(now) as ClaimedTransfer | undefined;
     if (!row) return undefined;
@@ -48,7 +83,10 @@ export function claimTransfer(workerId: string): ClaimedTransfer | undefined {
     if (!claimed.changes) return undefined;
     const attempt = row.attempts + 1;
     db.prepare('INSERT INTO transfer_attempts(job_id,attempt,started_at) VALUES(?,?,?)').run(row.id, attempt, now);
-    db.prepare("UPDATE backup_replicas SET status='packing',last_error=NULL,updated_at=? WHERE id=?").run(now, row.replica_id);
+    if (row.operation === 'upload')
+      db.prepare("UPDATE backup_replicas SET status='packing',last_error=NULL,updated_at=? WHERE id=?").run(now, row.replica_id);
+    else if (row.operation === 'delete')
+      db.prepare("UPDATE backup_replicas SET status='deleting',last_error=NULL,updated_at=? WHERE id=?").run(now, row.replica_id);
     return { ...row, attempts: attempt };
   })();
 }
@@ -91,7 +129,7 @@ export function classifyTransferError(error: unknown): 'auth' | 'quota' | 'timeo
   return 'unknown';
 }
 
-export function failTransfer(jobId: string, replicaId: string, error: unknown): { terminal: boolean; nextAttemptAt?: string; code: string } {
+export function failTransfer(jobId: string, replicaId: string, error: unknown, affectReplica = true): { terminal: boolean; nextAttemptAt?: string; code: string } {
   const now = new Date();
   const detail = String((error as any)?.message || error || 'Transfer failed').slice(0, 8000);
   const code = classifyTransferError(error);
@@ -106,7 +144,7 @@ export function failTransfer(jobId: string, replicaId: string, error: unknown): 
         terminal ? 'failed' : 'retry_wait', nextAttemptAt || null, code, detail,
         terminal ? now.toISOString() : null, now.toISOString(), jobId,
       );
-    db.prepare('UPDATE backup_replicas SET status=?,last_error=?,updated_at=? WHERE id=?')
+    if (affectReplica) db.prepare('UPDATE backup_replicas SET status=?,last_error=?,updated_at=? WHERE id=?')
       .run(terminal ? 'failed' : 'retry_wait', detail, now.toISOString(), replicaId);
     db.prepare(`UPDATE transfer_attempts SET completed_at=?,outcome=?,error_code=?,error=?
       WHERE job_id=? AND attempt=?`).run(now.toISOString(), terminal ? 'failed' : 'retry', code, detail, jobId, job.attempts);
@@ -122,7 +160,9 @@ export function recoverExpiredTransfers(): number {
     for (const row of rows) {
       db.prepare(`UPDATE transfer_jobs SET status='queued',claimed_by=NULL,lease_expires_at=NULL,heartbeat_at=NULL,
         error_code='interrupted',error='Recovered after an interrupted worker',updated_at=? WHERE id=?`).run(now, row.id);
-      db.prepare("UPDATE backup_replicas SET status='queued',last_error='Recovered after an interrupted worker',updated_at=? WHERE id=?").run(now, row.replica_id);
+      const job = db.prepare('SELECT operation FROM transfer_jobs WHERE id=?').get(row.id) as { operation: string };
+      if (job.operation !== 'download') db.prepare("UPDATE backup_replicas SET status=?,last_error='Recovered after an interrupted worker',updated_at=? WHERE id=?")
+        .run(job.operation === 'delete' ? 'deleting' : 'queued', now, row.replica_id);
       db.prepare(`UPDATE transfer_attempts SET completed_at=?,outcome='retry',error_code='interrupted',error='Worker lease expired'
         WHERE job_id=? AND attempt=? AND outcome IS NULL`).run(now, row.id, row.attempts);
     }
@@ -138,6 +178,7 @@ export function retryTransfer(jobId: string): void {
   db.transaction(() => {
     db.prepare(`UPDATE transfer_jobs SET status='queued',attempts=0,next_attempt_at=NULL,error_code=NULL,error=NULL,
       completed_at=NULL,bytes_transferred=0,speed_bps=NULL,updated_at=? WHERE id=?`).run(now, jobId);
-    db.prepare("UPDATE backup_replicas SET status='queued',last_error=NULL,updated_at=? WHERE id=?").run(now, job.replica_id);
+    if (job.operation !== 'download') db.prepare("UPDATE backup_replicas SET status=?,last_error=NULL,updated_at=? WHERE id=?")
+      .run(job.operation === 'delete' ? 'deleting' : 'queued', now, job.replica_id);
   })();
 }

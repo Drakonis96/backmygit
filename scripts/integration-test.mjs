@@ -356,6 +356,31 @@ ok(
   Buffer.isBuffer(zip) && zip.subarray(0, 2).toString() === "PK",
 );
 
+await json(`/backups/${firstBackupId}`, 'DELETE');
+const recoverable = await request('/cloud/recoverable');
+ok('deleted local backup remains recoverable from a verified cloud replica', recoverable.items.some(item => item.id === firstBackupId && item.target_id === cloudTarget.id));
+const restoreRequest = await json(`/cloud/recoverable/${firstBackupId}/restore`, 'POST', { targetId: cloudTarget.id });
+let restoreTransfer;
+const restoreDeadline = Date.now() + 45_000;
+while (Date.now() < restoreDeadline) {
+  const transferList = await request('/cloud/transfers?limit=50');
+  restoreTransfer = transferList.items.find(item => item.id === restoreRequest.jobId);
+  if (restoreTransfer?.status === 'success') break;
+  if (restoreTransfer?.status === 'failed') throw new Error(restoreTransfer.error);
+  await delay(250);
+}
+const restoredBackups = await request(`/backups?repositoryId=${repositoryId}`);
+ok(
+  'cloud restore verifies archive, metadata, and Git commit before publication',
+  restoreTransfer?.status === 'success' && restoredBackups.items.some(item => item.id === firstBackupId) &&
+    (await exec('git', ['-C', firstRun.destination, 'rev-parse', 'HEAD'])).stdout.trim() === firstRun.commit_sha,
+);
+
+const recoveryKit = await json('/cloud/recovery-kit', 'POST', { passphrase: 'integration recovery password' });
+ok('recovery kit is independently encrypted', recoveryKit.schemaVersion === 1 && recoveryKit.cipher === 'aes-256-gcm' && !JSON.stringify(recoveryKit).includes('managed-secret-password'));
+const auditLog = await request('/cloud/audit?limit=100');
+ok('sensitive cloud operations are auditable', auditLog.items.some(item => item.action === 'cloud.recovery_kit_exported') && auditLog.items.some(item => item.action === 'backup.restore_queued'));
+
 const storage = await request("/storage");
 ok(
   "real storage statistics",
@@ -404,6 +429,18 @@ try {
 } catch (error) {
   if (error.message === "old backup still exists") throw error;
 }
+let remoteDelete;
+const remoteDeleteDeadline = Date.now() + 45_000;
+while (Date.now() < remoteDeleteDeadline) {
+  const transferList = await request('/cloud/transfers?limit=50');
+  remoteDelete = transferList.items.find(item => item.snapshot_id === firstBackupId && item.operation === 'delete');
+  if (remoteDelete?.status === 'success') break;
+  if (remoteDelete?.status === 'failed') throw new Error(remoteDelete.error);
+  await delay(250);
+}
+let remoteWasDeleted = false;
+try { await fs.access(remoteArtifactPath); } catch { remoteWasDeleted = true; }
+ok('retention queues and completes tracked remote replica deletion', remoteDelete?.status === 'success' && remoteWasDeleted);
 
 const database = new Database(databasePath);
 database

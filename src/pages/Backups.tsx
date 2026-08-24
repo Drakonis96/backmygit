@@ -40,6 +40,7 @@ export default function Backups() {
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<number[]>([]);
   const [deleting, setDeleting] = useState(false);
+  const [deleteRemote, setDeleteRemote] = useState(false);
   const [browse, setBrowse] = useState<Backup>();
   const [currentPath, setCurrentPath] = useState("");
   const [entries, setEntries] = useState<Entry[]>([]);
@@ -90,10 +91,11 @@ export default function Backups() {
     setDeleting(true);
     try {
       if (selected.length === 1)
-        await mutate(`/backups/${selected[0]}`, "DELETE");
-      else await mutate("/backups/delete", "POST", { ids: selected });
+        await mutate(`/backups/${selected[0]}?remote=${deleteRemote}`, "DELETE");
+      else await mutate("/backups/delete", "POST", { ids: selected, deleteRemote });
       toast(t("deletedSuccessfully"));
       setSelected([]);
+      setDeleteRemote(false);
       await refresh();
     } catch {
       toast(t("unexpectedError"), "error");
@@ -368,6 +370,7 @@ export default function Backups() {
           <Trash2 />
           <p>{t("deleteBackupWarning")}</p>
         </div>
+        <label className="check-row"><input type="checkbox" checked={deleteRemote} onChange={event => setDeleteRemote(event.target.checked)} /><span>{t("deleteRemoteReplicas")}</span></label>
       </Modal>
     </>
   );

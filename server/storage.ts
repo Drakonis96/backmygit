@@ -7,6 +7,7 @@ import { config } from './config.js';
 import { db } from './db.js';
 import { branchDirectory, isWithin, repositoryDirectory } from './paths.js';
 import type { BackupMetadata } from './types.js';
+import { enqueueSnapshotRemoteDeletions } from './transfer-queue.js';
 
 const exec = promisify(execFile);
 
@@ -52,12 +53,13 @@ async function removeIfEmpty(directory: string) {
   try { if ((await fs.readdir(directory)).length === 0) await fs.rmdir(directory); } catch { /* not empty or absent */ }
 }
 
-export async function deleteBackupRecord(id: number): Promise<void> {
+export async function deleteBackupRecord(id: number, deleteRemote = false): Promise<void> {
   const backup = db.prepare(`SELECT s.id,s.branch_id,lr.id replica_id,lr.location path FROM snapshots s
     JOIN backup_replicas lr ON lr.snapshot_id=s.id AND lr.target_id='local' AND lr.status='verified' WHERE s.id=?`).get(id) as any;
   if (!backup) throw Object.assign(new Error('Backup not found'), { status: 404 });
   if (!isWithin(config.backupRoot, backup.path)) throw new Error('Refusing to delete a path outside the backup root');
   await fs.rm(backup.path, { recursive: true, force: true });
+  if (deleteRemote) enqueueSnapshotRemoteDeletions(backup.id);
   db.prepare("UPDATE backup_replicas SET status='deleted',deleted_at=?,updated_at=? WHERE id=?")
     .run(new Date().toISOString(), new Date().toISOString(), backup.replica_id);
   const branchDir = path.dirname(backup.path);

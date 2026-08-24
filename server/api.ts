@@ -23,6 +23,7 @@ import {
 import { isValidTimezone, searchTimezoneLocations } from "./timezones.js";
 import { enqueueBackup } from "./worker.js";
 import cloudApi from './cloud-api.js';
+import { audit } from './auth.js';
 
 const router = Router();
 const asyncRoute =
@@ -519,18 +520,25 @@ router.get(
 router.delete(
   "/backups/:id",
   asyncRoute(async (req, res) => {
-    await deleteBackupRecord(id(String(req.params.id)));
+    const snapshotId = id(String(req.params.id));
+    const deleteRemote = req.query.remote === 'true';
+    await deleteBackupRecord(snapshotId, deleteRemote);
+    audit('backup.deleted', req, { deleteRemote }, 'snapshot', String(snapshotId));
     res.json({ ok: true });
   }),
 );
 router.post(
   "/backups/delete",
   asyncRoute(async (req, res) => {
-    const ids = z
-      .object({ ids: z.array(z.number().int().positive()).min(1).max(100) })
-      .parse(req.body).ids;
-    for (const backupId of ids) await deleteBackupRecord(backupId);
-    res.json({ ok: true, deleted: ids.length });
+    const body = z.object({
+      ids: z.array(z.number().int().positive()).min(1).max(100),
+      deleteRemote: z.boolean().default(false),
+    }).parse(req.body);
+    for (const backupId of body.ids) {
+      await deleteBackupRecord(backupId, body.deleteRemote);
+      audit('backup.deleted', req, { deleteRemote: body.deleteRemote }, 'snapshot', String(backupId));
+    }
+    res.json({ ok: true, deleted: body.ids.length });
   }),
 );
 
