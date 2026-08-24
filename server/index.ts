@@ -12,6 +12,7 @@ import { startScheduler, stopScheduler } from "./scheduler.js";
 import { reconcileFilesystem } from "./storage.js";
 import { startWorker, stopWorker } from "./worker.js";
 import { ensureMasterKey } from './secrets.js';
+import { startTransferWorker, stopTransferWorker } from './transfer-worker.js';
 
 if (config.processRole === 'worker')
   throw new Error('Use dist-server/worker-entry.js when PROCESS_ROLE=worker');
@@ -83,6 +84,7 @@ const server = app.listen(config.port, "0.0.0.0", () => {
 });
 if (config.processRole === 'all') {
   startWorker();
+  startTransferWorker();
   startScheduler();
 }
 
@@ -90,7 +92,7 @@ async function shutdown(signal: string) {
   console.log(`${signal} received; shutting down`);
   if (config.processRole === 'all') stopScheduler();
   server.close();
-  if (config.processRole === 'all') await stopWorker();
+  if (config.processRole === 'all') await Promise.all([stopWorker(), stopTransferWorker()]);
   process.exit(0);
 }
 process.once("SIGTERM", () => void shutdown("SIGTERM"));

@@ -8,6 +8,7 @@ import { db, getSettings } from './db.js';
 import { assertRemoteName, obscureRcloneSecret } from './rclone.js';
 import { normalizeRemoteSubpath } from './rclone-config.js';
 import { deleteSecrets, putSecret } from './secrets.js';
+import { retryTransfer } from './transfer-queue.js';
 
 const router = Router();
 const asyncRoute = (fn: (req: Request, res: Response, next: NextFunction) => Promise<unknown>) =>
@@ -217,6 +218,26 @@ router.put('/assignments/global', (req, res) => {
   })();
   audit('cloud.assignments_updated', req, { scope: 'global', targetCount: targetIds.length }, 'target_assignment', 'global');
   res.json({ targetIds });
+});
+
+router.get('/transfers', (req, res) => {
+  const limit = z.coerce.number().int().min(1).max(200).default(50).parse(req.query.limit);
+  const rows = db.prepare(`SELECT j.id,j.operation,j.status,j.attempts,j.next_attempt_at,j.bytes_total,j.bytes_transferred,
+    j.speed_bps,j.error_code,j.error,j.created_at,j.started_at,j.completed_at,r.status replica_status,r.location,
+    r.snapshot_id,t.id target_id,t.name target_name,t.encryption_mode,c.name connection_name,c.provider,
+    repo.owner,repo.name repository,br.name branch,s.commit_sha
+    FROM transfer_jobs j JOIN backup_replicas r ON r.id=j.replica_id
+    JOIN storage_targets t ON t.id=r.target_id JOIN cloud_connections c ON c.id=t.connection_id
+    JOIN snapshots s ON s.id=r.snapshot_id JOIN repositories repo ON repo.id=s.repository_id
+    JOIN branches br ON br.id=s.branch_id ORDER BY j.created_at DESC LIMIT ?`).all(limit);
+  res.json({ items: rows });
+});
+
+router.post('/transfers/:id/retry', (req, res) => {
+  const jobId = identifier.parse(req.params.id);
+  retryTransfer(jobId);
+  audit('cloud.transfer_retried', req, {}, 'transfer_job', jobId);
+  res.json({ ok: true });
 });
 
 export default router;

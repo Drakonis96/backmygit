@@ -297,6 +297,15 @@ migrate(3, 'target-scoped secrets', () => {
   `);
 });
 
+migrate(4, 'transfer progress and artifact uniqueness', () => {
+  db.exec(`
+    ALTER TABLE transfer_jobs ADD COLUMN speed_bps INTEGER;
+    ALTER TABLE transfer_jobs ADD COLUMN progress_updated_at TEXT;
+    CREATE UNIQUE INDEX one_live_artifact_per_snapshot_format
+      ON artifacts(snapshot_id,format) WHERE status != 'deleted';
+  `);
+});
+
 // The local target is deployment configuration, not historical state. Keep it in
 // sync when an existing database is mounted at a different backup path.
 db.prepare("UPDATE storage_targets SET root_path=?,updated_at=? WHERE id='local'")

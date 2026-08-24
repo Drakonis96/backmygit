@@ -17,6 +17,10 @@ type Target = {
   connectionStatus?: string; assignmentCount: number;
 };
 type FolderItem = { name: string; path: string; id?: string };
+type Transfer = {
+  id: string; status: string; attempts: number; bytes_total?: number; bytes_transferred: number; speed_bps?: number;
+  error?: string; target_name: string; connection_name: string; owner: string; repository: string; branch: string; commit_sha: string;
+};
 
 const emptyConnection = { name: '', provider: 'external', remoteName: '', username: '', password: '', accessKeyId: '', secretAccessKey: '', endpoint: '', region: '', s3Provider: 'Other' };
 
@@ -28,6 +32,7 @@ export default function Destinations() {
   const connections = useApi<{ items: Connection[] }>('/cloud/connections', 15_000);
   const targets = useApi<{ items: Target[] }>('/cloud/targets', 15_000);
   const assignments = useApi<{ targetIds: string[] }>('/cloud/assignments/global');
+  const transfers = useApi<{ items: Transfer[] }>('/cloud/transfers?limit=50', 3_000);
   const [connectionOpen, setConnectionOpen] = useState(false);
   const [connectionForm, setConnectionForm] = useState(emptyConnection);
   const [targetConnection, setTargetConnection] = useState<Connection>();
@@ -40,7 +45,7 @@ export default function Destinations() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   useEffect(() => { if (assignments.data) setSelected(assignments.data.targetIds); }, [assignments.data]);
-  const refresh = async () => Promise.all([connections.refresh(), targets.refresh(), assignments.refresh()]);
+  const refresh = async () => Promise.all([connections.refresh(), targets.refresh(), assignments.refresh(), transfers.refresh()]);
   const fail = (caught: unknown) => {
     const message = caught instanceof ApiError ? caught.message : t('unexpectedError');
     setError(message); toast(message, 'error');
@@ -105,6 +110,11 @@ export default function Destinations() {
     try { await mutate('/cloud/assignments/global', 'PUT', { targetIds: selected }); toast(t('destinationsSaved')); await refresh(); }
     catch (caught) { fail(caught); } finally { setBusy(false); }
   };
+  const retry = async (transfer: Transfer) => {
+    setBusy(true); setError('');
+    try { await mutate(`/cloud/transfers/${transfer.id}/retry`, 'POST'); toast(t('transferQueued')); await transfers.refresh(); }
+    catch (caught) { fail(caught); } finally { setBusy(false); }
+  };
 
   if (connections.loading || targets.loading || assignments.loading) return <Loading />;
   return <>
@@ -130,6 +140,16 @@ export default function Destinations() {
           {canManage && target.kind === 'rclone' && <button type="button" className="icon-button danger" disabled={busy} onClick={event => { event.preventDefault(); void deleteTarget(target); }} title={t('delete')}><Trash2 /></button>}
         </label>)}
       </div>
+    </Card>
+
+    <Card title={t('replicationActivity')}>
+      {!transfers.data?.items.length ? <Empty icon={<RefreshCw />} title={t('noTransfers')} text={t('noTransfersHelp')} /> : <div className="transfer-list">
+        {transfers.data.items.map(transfer => {
+          const total = transfer.bytes_total || 0;
+          const percent = total ? Math.min(100, transfer.bytes_transferred / total * 100) : 0;
+          return <div className="transfer-row" key={transfer.id}><span className="target-icon"><Cloud /></span><span className="transfer-main"><b>{transfer.owner}/{transfer.repository} · {transfer.branch}</b><small>{transfer.target_name} · {transfer.commit_sha.slice(0, 8)} · {t('attempt')} {transfer.attempts}</small><i><em style={{ width: `${percent}%` }} /></i>{transfer.error && <small className="transfer-error">{transfer.error}</small>}</span><span className="transfer-state"><StatusBadge status={transfer.status} />{canManage && transfer.status === 'failed' && <button className="button secondary" disabled={busy} onClick={() => void retry(transfer)}>{t('retryTransfer')}</button>}</span></div>;
+        })}
+      </div>}
     </Card>
 
     <Modal open={connectionOpen} onClose={() => setConnectionOpen(false)} title={t('addConnection')} footer={<><button className="button secondary" onClick={() => setConnectionOpen(false)}>{t('cancel')}</button><button className="button primary" disabled={busy} onClick={createConnection}>{busy ? t('saving') : t('createConnection')}</button></>}>

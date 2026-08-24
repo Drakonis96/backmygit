@@ -3,14 +3,16 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import Database from "better-sqlite3";
+import { createHash } from "node:crypto";
 
 const exec = promisify(execFile);
 const base = process.env.TEST_BASE_URL;
 const backupRoot = process.env.TEST_BACKUP_ROOT;
 const databasePath = process.env.TEST_DATABASE_PATH;
-if (!base || !backupRoot || !databasePath)
+const remoteRoot = process.env.TEST_REMOTE_ROOT;
+if (!base || !backupRoot || !databasePath || !remoteRoot)
   throw new Error(
-    "TEST_BASE_URL, TEST_BACKUP_ROOT and TEST_DATABASE_PATH are required",
+    "TEST_BASE_URL, TEST_BACKUP_ROOT, TEST_DATABASE_PATH and TEST_REMOTE_ROOT are required",
   );
 
 const checks = [];
@@ -257,6 +259,43 @@ const firstBackupId = initialBackups.items.find(
   (backup) => backup.run_id === firstRun.id,
 )?.id;
 ok("backup metadata persistence", Number.isInteger(firstBackupId));
+let completedTransfer;
+const transferDeadline = Date.now() + 45_000;
+while (Date.now() < transferDeadline) {
+  const transferList = await request('/cloud/transfers?limit=20');
+  completedTransfer = transferList.items.find(item => item.snapshot_id === firstBackupId && item.target_id === cloudTarget.id);
+  if (completedTransfer?.status === 'success') break;
+  if (completedTransfer?.status === 'failed') throw new Error(completedTransfer.error);
+  await delay(250);
+}
+ok(
+  'cloud fan-out transfer with persisted progress',
+  completedTransfer?.status === 'success' && completedTransfer.bytes_total > 0 &&
+    completedTransfer.bytes_transferred === completedTransfer.bytes_total && completedTransfer.attempts === 1,
+);
+const remoteArtifactPath = path.join(remoteRoot, cloudTarget.rootPath, ...completedTransfer.location.split('/'));
+const remoteArtifact = await fs.readFile(remoteArtifactPath);
+const replicaDatabase = new Database(databasePath, { readonly: true });
+const verifiedReplica = replicaDatabase.prepare('SELECT status,sha256,size_bytes FROM backup_replicas WHERE snapshot_id=? AND target_id=?').get(firstBackupId, cloudTarget.id);
+replicaDatabase.close();
+ok(
+  'download-based remote SHA-256 verification',
+  verifiedReplica.status === 'verified' && verifiedReplica.size_bytes === remoteArtifact.length &&
+    verifiedReplica.sha256 === createHash('sha256').update(remoteArtifact).digest('hex'),
+);
+const idempotencyDatabase = new Database(databasePath);
+idempotencyDatabase.prepare("UPDATE transfer_jobs SET status='queued',attempts=0,completed_at=NULL WHERE id=?").run(completedTransfer.id);
+idempotencyDatabase.prepare("UPDATE backup_replicas SET status='queued',verified_at=NULL WHERE snapshot_id=? AND target_id=?").run(firstBackupId, cloudTarget.id);
+idempotencyDatabase.close();
+const idempotencyDeadline = Date.now() + 45_000;
+while (Date.now() < idempotencyDeadline) {
+  const transferList = await request('/cloud/transfers?limit=20');
+  completedTransfer = transferList.items.find(item => item.id === completedTransfer.id);
+  if (completedTransfer?.status === 'success') break;
+  if (completedTransfer?.status === 'failed') throw new Error(completedTransfer.error);
+  await delay(250);
+}
+ok('idempotent replay against an existing verified remote object', completedTransfer?.status === 'success' && completedTransfer.attempts === 1);
 const contents = await request(`/backups/${firstBackupId}/contents`);
 ok(
   "filesystem content browser",

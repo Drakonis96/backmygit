@@ -5,7 +5,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { config } from './config.js';
 import { getSecret } from './secrets.js';
-import { assertRemoteName, renderRcloneConfig, type ManagedRcloneConfig } from './rclone-config.js';
+import { assertRemoteName, normalizeRemoteSubpath, renderRcloneConfig, type ManagedRcloneConfig } from './rclone-config.js';
 
 export { assertRemoteName, normalizeRemoteSubpath, remotePath, renderRcloneConfig } from './rclone-config.js';
 export type { ManagedRcloneConfig } from './rclone-config.js';
@@ -43,6 +43,44 @@ export async function withRcloneConfig<T>(connection: {
   }
 }
 
+export async function withTargetRcloneConfig<T>(
+  connection: { id: string; remote_name: string; managed: number },
+  target: { id: string; root_path: string; encryption_mode: string },
+  callback: (context: { configPath: string; remoteName: string; rootPath: string }) => Promise<T>,
+): Promise<T> {
+  return withRcloneConfig(connection, async baseConfigPath => {
+    const rootPath = normalizeRemoteSubpath(target.root_path);
+    if (target.encryption_mode !== 'crypt')
+      return callback({ configPath: baseConfigPath, remoteName: connection.remote_name, rootPath });
+    const crypt = await getSecret<{ password: string; password2: string }>('target', target.id, 'crypt');
+    if (!crypt?.password || !crypt?.password2) throw new Error('Target encryption keys are unavailable');
+    const stat = await fs.stat(baseConfigPath);
+    if (stat.size > 10 * 1024 * 1024) throw new Error('The rclone configuration file is too large');
+    const cryptName = assertRemoteName(`bmgcrypt_${target.id.replaceAll('-', '')}`);
+    const temporaryBase = path.join(config.dataDir, 'tmp');
+    await fs.mkdir(temporaryBase, { recursive: true, mode: 0o700 });
+    const directory = await fs.mkdtemp(path.join(temporaryBase, 'rclone-crypt-'));
+    const file = path.join(directory, 'rclone.conf');
+    const base = await fs.readFile(baseConfigPath, 'utf8');
+    const cryptConfig = renderRcloneConfig(cryptName, {
+      type: 'crypt',
+      fields: {
+        remote: `${connection.remote_name}:${rootPath}`,
+        password: crypt.password,
+        password2: crypt.password2,
+        filename_encryption: 'standard',
+        directory_name_encryption: 'true',
+      },
+    });
+    await fs.writeFile(file, `${base.trimEnd()}\n\n${cryptConfig}`, { flag: 'wx', mode: 0o600 });
+    try {
+      return await callback({ configPath: file, remoteName: cryptName, rootPath: '' });
+    } finally {
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
+}
+
 export async function runRclone(
   args: string[],
   options: { configPath?: string; timeoutMs?: number; maxBuffer?: number } = {},
@@ -70,6 +108,60 @@ export async function runRclone(
     const detail = String(error?.stderr || error?.message || 'rclone failed').slice(0, 8000);
     throw Object.assign(new Error(detail), { code: error?.code, killed: error?.killed });
   }
+}
+
+export async function runRcloneStreaming(
+  args: string[],
+  options: { configPath: string; timeoutMs?: number; statsInterval?: string; onProgress?: (progress: { bytes: number; totalBytes?: number; speed?: number }) => void },
+): Promise<{ stdout: string; stderr: string }> {
+  const home = path.join(config.dataDir, 'rclone-home');
+  await fs.mkdir(home, { recursive: true, mode: 0o700 });
+  return new Promise((resolve, reject) => {
+    const child = spawn(config.rcloneBinary, [
+      '--config', options.configPath,
+      '--ask-password=false',
+      '--use-json-log',
+      '--stats', options.statsInterval || '1s',
+      '--stats-log-level', 'INFO',
+      '--log-level', 'INFO',
+      ...args,
+    ], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { PATH: process.env.PATH, HOME: home, XDG_CONFIG_HOME: home, LANG: 'C.UTF-8' },
+    });
+    let stdout = '';
+    let stderr = '';
+    let lineBuffer = '';
+    const parseProgress = (chunk: Buffer) => {
+      lineBuffer += chunk.toString();
+      const lines = lineBuffer.split(/\r?\n/);
+      lineBuffer = lines.pop() || '';
+      for (const line of lines) {
+        try {
+          const parsed = JSON.parse(line);
+          const stats = parsed.stats || parsed;
+          const bytes = Number(stats.bytes);
+          const totalBytes = Number(stats.totalBytes);
+          const speed = Number(stats.speed || stats.speedAvg);
+          if (Number.isFinite(bytes)) options.onProgress?.({
+            bytes: Math.max(0, Math.floor(bytes)),
+            totalBytes: Number.isFinite(totalBytes) ? Math.max(0, Math.floor(totalBytes)) : undefined,
+            speed: Number.isFinite(speed) ? Math.max(0, Math.floor(speed)) : undefined,
+          });
+        } catch { /* ordinary rclone log line */ }
+      }
+    };
+    child.stdout.on('data', chunk => { if (stdout.length < 64 * 1024) stdout += chunk; });
+    child.stderr.on('data', chunk => { if (stderr.length < 64 * 1024) stderr += chunk; parseProgress(chunk); });
+    let timedOut = false;
+    const timeout = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, options.timeoutMs || config.rcloneTimeoutMs);
+    child.once('error', error => { clearTimeout(timeout); reject(error); });
+    child.once('close', code => {
+      clearTimeout(timeout);
+      if (code === 0 && !timedOut) resolve({ stdout, stderr });
+      else reject(Object.assign(new Error(timedOut ? 'rclone timed out' : stderr.trim().slice(0, 8000) || 'rclone failed'), { code }));
+    });
+  });
 }
 
 export async function rcloneVersion(): Promise<string> {

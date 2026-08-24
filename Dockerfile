@@ -26,7 +26,7 @@ RUN apk add --no-cache ca-certificates curl unzip \
 FROM node:22-alpine AS runtime
 ENV NODE_ENV=production PORT=8787 DATA_DIR=/data BACKUP_ROOT=/backups
 WORKDIR /app
-RUN apk add --no-cache git ca-certificates tini zstd
+RUN apk add --no-cache git ca-certificates tini tar zstd
 COPY --from=rclone /usr/local/bin/rclone /usr/local/bin/rclone
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist

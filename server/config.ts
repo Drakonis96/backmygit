@@ -35,6 +35,8 @@ export const config = {
   backupHostPath: process.env.BACKUP_HOST_PATH || process.env.BACKUP_ROOT || './backups',
   appVersion: process.env.APP_VERSION || '0.1.0',
   workerConcurrency: Math.max(1, Number(process.env.WORKER_CONCURRENCY || 2)),
+  transferConcurrency: Math.max(1, Number(process.env.TRANSFER_CONCURRENCY || 2)),
+  transferMaxAttempts: Math.max(1, Number(process.env.TRANSFER_MAX_ATTEMPTS || 5)),
   minFreeBytes: Math.max(0, Number(process.env.MIN_FREE_BYTES || 536870912)),
   gitTimeoutMs: Math.max(60_000, Number(process.env.GIT_TIMEOUT_MS || 1800000)),
   publicUrl,
@@ -51,6 +53,7 @@ export const config = {
   rcloneBinary: process.env.RCLONE_BINARY || 'rclone',
   rcloneExternalConfig: path.resolve(process.env.RCLONE_CONFIG_FILE || '/config/rclone/rclone.conf'),
   rcloneTimeoutMs: Math.max(30_000, Number(process.env.RCLONE_TIMEOUT_MS || 60 * 60_000)),
+  artifactRoot: path.resolve(process.env.ARTIFACT_ROOT || path.join(process.env.BACKUP_ROOT || './backups', '.artifacts')),
   allowPrivateCloudEndpoints: process.env.ALLOW_PRIVATE_CLOUD_ENDPOINTS === 'true',
   isProduction: process.env.NODE_ENV === 'production'
 };

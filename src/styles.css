@@ -2062,6 +2062,59 @@ tbody tr:last-child td {
   color: var(--primary);
   background: var(--primary-soft);
 }
+.transfer-list {
+  display: grid;
+  gap: 8px;
+}
+.transfer-row {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+.transfer-main {
+  min-width: 0;
+}
+.transfer-main b,
+.transfer-main small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.transfer-main small {
+  color: var(--muted);
+  font-size: 10px;
+  margin-top: 3px;
+}
+.transfer-main > i {
+  display: block;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: var(--line);
+  margin-top: 7px;
+}
+.transfer-main > i > em {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--primary);
+  transition: width 0.25s ease;
+}
+.transfer-main .transfer-error {
+  color: var(--danger);
+  white-space: normal;
+}
+.transfer-state {
+  display: grid;
+  justify-items: end;
+  gap: 6px;
+}
 @media (max-width: 640px) {
   .destination-grid {
     grid-template-columns: minmax(0, 1fr);
@@ -2111,6 +2164,13 @@ tbody tr:last-child td {
   .folder-input {
     align-items: stretch;
     flex-direction: column;
+  }
+  .transfer-row {
+    grid-template-columns: 38px minmax(0, 1fr);
+  }
+  .transfer-state {
+    grid-column: 2;
+    justify-items: start;
   }
 }
 .warning-box {

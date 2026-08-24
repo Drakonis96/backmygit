@@ -9,6 +9,7 @@ import { branchDirectory, repositoryDirectory, timestampDirectory } from './path
 import { applyRetention } from './retention.js';
 import { directorySize } from './storage.js';
 import type { BackupMetadata } from './types.js';
+import { enqueueSnapshotReplicas } from './transfer-queue.js';
 
 const exec = promisify(execFile);
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -120,6 +121,7 @@ async function executeRun(runId: string) {
           randomUUID(), snapshot.id, destination, metadata.sizeBytes, commitSha, 1,
           completed.toISOString(), completed.toISOString(), completed.toISOString(),
         );
+      enqueueSnapshotReplicas(snapshot.id);
       db.prepare('UPDATE branches SET last_run_at=? WHERE id=?').run(completed.toISOString(), row.branch_id);
     })();
     try {

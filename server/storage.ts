@@ -33,7 +33,7 @@ export async function storageStats() {
   const free = stat.bavail * stat.bsize;
   let backupsUsed = 0;
   for (const entry of await fs.readdir(config.backupRoot, { withFileTypes: true })) {
-    if (entry.name !== '.tmp' && entry.isDirectory())
+    if (!entry.name.startsWith('.') && entry.isDirectory())
       backupsUsed += await directorySize(path.join(config.backupRoot, entry.name));
   }
   const byRepository = db.prepare(`SELECT r.id, r.owner, r.name, COALESCE(SUM(lr.size_bytes),0) sizeBytes, COUNT(lr.id) backups
@@ -79,7 +79,7 @@ export async function reconcileFilesystem(): Promise<{ discovered: number }> {
   let discovered = 0;
   let repoDirs: import('node:fs').Dirent[];
   try { repoDirs = await fs.readdir(config.backupRoot, { withFileTypes: true }); } catch { return { discovered }; }
-  for (const repoEntry of repoDirs.filter(x => x.name !== '.tmp' && x.isDirectory())) {
+  for (const repoEntry of repoDirs.filter(x => !x.name.startsWith('.') && x.isDirectory())) {
     const repoDir = repoEntry.name;
     const repoPath = path.join(config.backupRoot, repoDir);
     let branchDirs: import('node:fs').Dirent[]; try { branchDirs = await fs.readdir(repoPath, { withFileTypes: true }); } catch { continue; }

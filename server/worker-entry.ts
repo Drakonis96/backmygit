@@ -7,6 +7,7 @@ import { startScheduler, stopScheduler } from './scheduler.js';
 import { ensureMasterKey } from './secrets.js';
 import { reconcileFilesystem } from './storage.js';
 import { startWorker, stopWorker } from './worker.js';
+import { startTransferWorker, stopTransferWorker } from './transfer-worker.js';
 
 if (config.processRole !== 'worker')
   throw new Error('The worker entrypoint requires PROCESS_ROLE=worker');
@@ -27,6 +28,7 @@ try {
 }
 
 startWorker();
+startTransferWorker();
 startScheduler();
 console.log(`BackMyGit ${config.appVersion} worker started`);
 const keepAlive = setInterval(() => undefined, 60 * 60_000);
@@ -35,7 +37,7 @@ async function shutdown(signal: string) {
   console.log(`${signal} received; stopping worker`);
   clearInterval(keepAlive);
   stopScheduler();
-  await stopWorker();
+  await Promise.all([stopWorker(), stopTransferWorker()]);
   process.exit(0);
 }
 process.once('SIGTERM', () => void shutdown('SIGTERM'));
