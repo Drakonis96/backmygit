@@ -1,16 +1,53 @@
 import { execFile, spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { config } from './config.js';
-import { getSecret } from './secrets.js';
-import { assertRemoteName, normalizeRemoteSubpath, renderRcloneConfig, type ManagedRcloneConfig } from './rclone-config.js';
+import { db } from './db.js';
+import { getSecret, putSecret } from './secrets.js';
+import { assertRemoteName, normalizeRemoteSubpath, parseRcloneConfig, renderRcloneConfig, type ManagedRcloneConfig } from './rclone-config.js';
 
 export { assertRemoteName, normalizeRemoteSubpath, remotePath, renderRcloneConfig } from './rclone-config.js';
 export type { ManagedRcloneConfig } from './rclone-config.js';
 
 const exec = promisify(execFile);
+const connectionLockLeaseMs = 5 * 60_000;
+
+function pause(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function acquireConnectionLock(connectionId: string): Promise<() => void> {
+  const holder = randomUUID();
+  const deadline = Date.now() + config.rcloneTimeoutMs;
+  while (Date.now() < deadline) {
+    const now = new Date();
+    const expires = new Date(now.getTime() + connectionLockLeaseMs).toISOString();
+    const acquired = db.transaction(() => {
+      db.prepare('DELETE FROM connection_locks WHERE connection_id=? AND expires_at<=?').run(connectionId, now.toISOString());
+      return db.prepare(`INSERT INTO connection_locks(connection_id,holder,expires_at,created_at,updated_at)
+        VALUES(?,?,?,?,?) ON CONFLICT(connection_id) DO NOTHING`).run(
+          connectionId, holder, expires, now.toISOString(), now.toISOString(),
+        ).changes === 1;
+    }).immediate();
+    if (acquired) {
+      const heartbeat = setInterval(() => {
+        const refreshed = new Date();
+        db.prepare('UPDATE connection_locks SET expires_at=?,updated_at=? WHERE connection_id=? AND holder=?')
+          .run(new Date(refreshed.getTime() + connectionLockLeaseMs).toISOString(), refreshed.toISOString(), connectionId, holder);
+      }, Math.floor(connectionLockLeaseMs / 3));
+      heartbeat.unref();
+      return () => {
+        clearInterval(heartbeat);
+        db.prepare('DELETE FROM connection_locks WHERE connection_id=? AND holder=?').run(connectionId, holder);
+      };
+    }
+    await pause(250);
+  }
+  throw new Error('Timed out waiting for exclusive access to the cloud connection');
+}
 
 async function managedConfigPath(connectionId: string, remoteName: string): Promise<{ directory: string; file: string }> {
   const remote = await getSecret<ManagedRcloneConfig>('connection', connectionId, 'rclone-config');
@@ -35,11 +72,24 @@ export async function withRcloneConfig<T>(connection: {
     if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('External rclone config must be a regular file');
     return callback(config.rcloneExternalConfig);
   }
-  const temporary = await managedConfigPath(connection.id, connection.remote_name);
+  const release = await acquireConnectionLock(connection.id);
+  let temporary: { directory: string; file: string } | undefined;
   try {
+    temporary = await managedConfigPath(connection.id, connection.remote_name);
     return await callback(temporary.file);
   } finally {
-    await fs.rm(temporary.directory, { recursive: true, force: true });
+    try {
+      if (temporary) {
+        try {
+          const updated = parseRcloneConfig(await fs.readFile(temporary.file, 'utf8'), connection.remote_name);
+          await putSecret('connection', connection.id, 'rclone-config', updated);
+        } finally {
+          await fs.rm(temporary.directory, { recursive: true, force: true });
+        }
+      }
+    } finally {
+      release();
+    }
   }
 }
 
@@ -76,7 +126,14 @@ export async function withTargetRcloneConfig<T>(
     try {
       return await callback({ configPath: file, remoteName: cryptName, rootPath: '' });
     } finally {
-      await fs.rm(directory, { recursive: true, force: true });
+      try {
+        if (connection.managed) {
+          const updated = parseRcloneConfig(await fs.readFile(file, 'utf8'), connection.remote_name);
+          await fs.writeFile(baseConfigPath, renderRcloneConfig(connection.remote_name, updated), { mode: 0o600 });
+        }
+      } finally {
+        await fs.rm(directory, { recursive: true, force: true });
+      }
     }
   });
 }

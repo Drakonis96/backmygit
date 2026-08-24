@@ -22,7 +22,7 @@ type Transfer = {
   error?: string; target_name: string; connection_name: string; owner: string; repository: string; branch: string; commit_sha: string;
 };
 
-const emptyConnection = { name: '', provider: 'external', remoteName: '', username: '', password: '', accessKeyId: '', secretAccessKey: '', endpoint: '', region: '', s3Provider: 'Other' };
+const emptyConnection = { name: '', provider: 'external', remoteName: '', username: '', password: '', accessKeyId: '', secretAccessKey: '', endpoint: '', region: '', s3Provider: 'Other', clientId: '', clientSecret: '' };
 
 export default function Destinations() {
   const { t } = useTranslation();
@@ -30,6 +30,7 @@ export default function Destinations() {
   const toast = useToast();
   const canManage = user?.role === 'admin';
   const connections = useApi<{ items: Connection[] }>('/cloud/connections', 15_000);
+  const oauthConfig = useApi<{ available: boolean; redirectUri?: string }>('/cloud/oauth/config');
   const targets = useApi<{ items: Target[] }>('/cloud/targets', 15_000);
   const assignments = useApi<{ targetIds: string[] }>('/cloud/assignments/global');
   const transfers = useApi<{ items: Transfer[] }>('/cloud/transfers?limit=50', 3_000);
@@ -45,6 +46,12 @@ export default function Destinations() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   useEffect(() => { if (assignments.data) setSelected(assignments.data.targetIds); }, [assignments.data]);
+  useEffect(() => {
+    const result = new URLSearchParams(window.location.search).get('oauth');
+    if (result === 'success') toast(t('oauthConnected'));
+    if (result === 'error') toast(t('oauthFailed'), 'error');
+    if (result) window.history.replaceState({}, '', window.location.pathname);
+  }, [t, toast]);
   const refresh = async () => Promise.all([connections.refresh(), targets.refresh(), assignments.refresh(), transfers.refresh()]);
   const fail = (caught: unknown) => {
     const message = caught instanceof ApiError ? caught.message : t('unexpectedError');
@@ -54,6 +61,16 @@ export default function Destinations() {
   const createConnection = async () => {
     setBusy(true); setError('');
     try {
+      if (['drive', 'dropbox', 'onedrive'].includes(connectionForm.provider)) {
+        const result = await mutate<{ authorizationUrl: string }>('/cloud/oauth/start', 'POST', {
+          name: connectionForm.name,
+          provider: connectionForm.provider,
+          clientId: connectionForm.clientId,
+          clientSecret: connectionForm.clientSecret,
+        });
+        window.location.assign(result.authorizationUrl);
+        return;
+      }
       const credentials = connectionForm.provider === 'mega'
         ? { username: connectionForm.username, password: connectionForm.password }
         : connectionForm.provider === 's3'
@@ -67,6 +84,13 @@ export default function Destinations() {
       });
       setConnectionOpen(false); setConnectionForm(emptyConnection); toast(t('connectionCreated')); await refresh();
     } catch (caught) { fail(caught); } finally { setBusy(false); }
+  };
+  const reauthorize = async (connection: Connection) => {
+    setBusy(true); setError('');
+    try {
+      const result = await mutate<{ authorizationUrl: string }>(`/cloud/connections/${connection.id}/oauth/start`, 'POST');
+      window.location.assign(result.authorizationUrl);
+    } catch (caught) { fail(caught); setBusy(false); }
   };
   const testConnection = async (connection: Connection) => {
     setBusy(true); setError('');
@@ -125,7 +149,7 @@ export default function Destinations() {
         {connections.data.items.map(connection => <article className="destination-card" key={connection.id}>
           <div className="destination-card-head"><span className="provider-icon"><Cloud /></span><div><b>{connection.name}</b><small>{connection.provider} · {connection.remoteName}</small></div><StatusBadge status={connection.status} /></div>
           {connection.lastError && <p className="connection-error">{connection.lastError}</p>}
-          {canManage && <div className="destination-actions"><button className="button secondary" disabled={busy} onClick={() => testConnection(connection)}><RefreshCw />{t('testConnection')}</button><button className="button secondary" disabled={busy || connection.status !== 'connected'} onClick={() => openTarget(connection)}><Plus />{t('addDestination')}</button><button className="icon-button danger" disabled={busy || connection.targetCount > 0} onClick={() => deleteConnection(connection)} title={t('delete')}><Trash2 /></button></div>}
+          {canManage && <div className="destination-actions">{connection.authType === 'managed_oauth' && connection.status !== 'connected' && <button className="button secondary" disabled={busy} onClick={() => void reauthorize(connection)}><RefreshCw />{t('reauthorize')}</button>}<button className="button secondary" disabled={busy} onClick={() => testConnection(connection)}><RefreshCw />{t('testConnection')}</button><button className="button secondary" disabled={busy || connection.status !== 'connected'} onClick={() => openTarget(connection)}><Plus />{t('addDestination')}</button><button className="icon-button danger" disabled={busy || connection.targetCount > 0} onClick={() => deleteConnection(connection)} title={t('delete')}><Trash2 /></button></div>}
         </article>)}
       </div>}
     </Card>
@@ -159,7 +183,7 @@ export default function Destinations() {
         {connectionForm.provider === 'external' && <label className="full"><span>{t('remoteName')}</span><input value={connectionForm.remoteName} onChange={event => setConnectionForm({ ...connectionForm, remoteName: event.target.value })} placeholder="my_remote" /></label>}
         {connectionForm.provider === 'mega' && <><label><span>{t('username')}</span><input type="email" autoComplete="username" value={connectionForm.username} onChange={event => setConnectionForm({ ...connectionForm, username: event.target.value })} /></label><label><span>{t('password')}</span><input type="password" autoComplete="new-password" value={connectionForm.password} onChange={event => setConnectionForm({ ...connectionForm, password: event.target.value })} /></label></>}
         {connectionForm.provider === 's3' && <><label><span>{t('accessKeyId')}</span><input autoComplete="off" value={connectionForm.accessKeyId} onChange={event => setConnectionForm({ ...connectionForm, accessKeyId: event.target.value })} /></label><label><span>{t('secretAccessKey')}</span><input type="password" autoComplete="new-password" value={connectionForm.secretAccessKey} onChange={event => setConnectionForm({ ...connectionForm, secretAccessKey: event.target.value })} /></label><label className="full"><span>{t('endpointOptional')}</span><input type="url" value={connectionForm.endpoint} onChange={event => setConnectionForm({ ...connectionForm, endpoint: event.target.value })} placeholder="https://s3.example.com" /></label><label><span>{t('regionOptional')}</span><input value={connectionForm.region} onChange={event => setConnectionForm({ ...connectionForm, region: event.target.value })} /></label><label><span>{t('s3Provider')}</span><input value={connectionForm.s3Provider} onChange={event => setConnectionForm({ ...connectionForm, s3Provider: event.target.value })} /></label></>}
-        {['drive', 'dropbox', 'onedrive'].includes(connectionForm.provider) && <div className="full oauth-note">{t('oauthConfiguredNext')}</div>}
+        {['drive', 'dropbox', 'onedrive'].includes(connectionForm.provider) && <><label className="full"><span>{t('oauthClientId')}</span><input autoComplete="off" value={connectionForm.clientId} onChange={event => setConnectionForm({ ...connectionForm, clientId: event.target.value })} /></label><label className="full"><span>{t('oauthClientSecret')}</span><input type="password" autoComplete="new-password" value={connectionForm.clientSecret} onChange={event => setConnectionForm({ ...connectionForm, clientSecret: event.target.value })} /></label><div className="full oauth-note">{oauthConfig.data?.available ? <>{t('oauthRedirectHelp')}<code>{oauthConfig.data.redirectUri}</code></> : t('oauthUnavailable')}</div></>}
       </div>
     </Modal>
 

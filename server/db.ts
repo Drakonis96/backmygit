@@ -306,6 +306,32 @@ migrate(4, 'transfer progress and artifact uniqueness', () => {
   `);
 });
 
+migrate(5, 'oauth flows and connection locks', () => {
+  db.exec(`
+    CREATE TABLE oauth_flows (
+      id TEXT PRIMARY KEY,
+      connection_id TEXT NOT NULL REFERENCES cloud_connections(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      state_hash TEXT NOT NULL UNIQUE,
+      provider TEXT NOT NULL CHECK(provider IN ('drive','dropbox','onedrive')),
+      redirect_uri TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      used_at TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX oauth_flows_expiry_idx ON oauth_flows(expires_at,used_at);
+    CREATE TABLE connection_locks (
+      connection_id TEXT PRIMARY KEY REFERENCES cloud_connections(id) ON DELETE CASCADE,
+      holder TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX connection_locks_expiry_idx ON connection_locks(expires_at);
+  `);
+});
+
 // The local target is deployment configuration, not historical state. Keep it in
 // sync when an existing database is mounted at a different backup path.
 db.prepare("UPDATE storage_targets SET root_path=?,updated_at=? WHERE id='local'")

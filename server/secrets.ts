@@ -66,3 +66,8 @@ export async function getSecret<T>(ownerType: SecretOwner, ownerId: string, purp
 export function deleteSecrets(ownerType: SecretOwner, ownerId: string): void {
   db.prepare('DELETE FROM encrypted_secrets WHERE owner_type=? AND owner_id=?').run(ownerType, ownerId);
 }
+
+export function deleteSecret(ownerType: SecretOwner, ownerId: string, purpose: string): void {
+  db.prepare('DELETE FROM encrypted_secrets WHERE owner_type=? AND owner_id=? AND purpose=?')
+    .run(ownerType, ownerId, purpose);
+}

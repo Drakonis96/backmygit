@@ -56,7 +56,7 @@ const port = 28_000 + Math.floor(Math.random() * 1_000);
 const base = `http://127.0.0.1:${port}`;
 const server = spawn(process.execPath, ['dist-server/index.js'], {
   cwd: process.cwd(),
-  env: { ...process.env, NODE_ENV: 'production', PROCESS_ROLE: 'web', PORT: String(port), DATA_DIR: dataDir, BACKUP_ROOT: backupRoot, BACKUP_HOST_PATH: backupRoot, RCLONE_BINARY: fakeRclone, RCLONE_CONFIG_FILE: externalRcloneConfig },
+  env: { ...process.env, NODE_ENV: 'production', PROCESS_ROLE: 'web', PORT: String(port), PUBLIC_URL: base, DATA_DIR: dataDir, BACKUP_ROOT: backupRoot, BACKUP_HOST_PATH: backupRoot, RCLONE_BINARY: fakeRclone, RCLONE_CONFIG_FILE: externalRcloneConfig },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let serverLog = '';
@@ -85,7 +85,7 @@ try {
   if (!ready) throw new Error(`Integration server did not start:\n${serverLog}`);
   worker = spawn(process.execPath, ['dist-server/worker-entry.js'], {
     cwd: process.cwd(),
-    env: { ...process.env, NODE_ENV: 'production', PROCESS_ROLE: 'worker', DATA_DIR: dataDir, BACKUP_ROOT: backupRoot, BACKUP_HOST_PATH: backupRoot, RCLONE_BINARY: fakeRclone, RCLONE_CONFIG_FILE: externalRcloneConfig },
+    env: { ...process.env, NODE_ENV: 'production', PROCESS_ROLE: 'worker', PUBLIC_URL: base, DATA_DIR: dataDir, BACKUP_ROOT: backupRoot, BACKUP_HOST_PATH: backupRoot, RCLONE_BINARY: fakeRclone, RCLONE_CONFIG_FILE: externalRcloneConfig },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   worker.stdout.on('data', chunk => { workerLog += chunk; });

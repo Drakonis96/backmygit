@@ -90,6 +90,36 @@ ok(
   'cloud provider catalog',
   ['drive', 'dropbox', 'onedrive', 'mega', 's3', 'external'].every(provider => providers.items.some(item => item.id === provider)),
 );
+const oauthConfig = await request('/cloud/oauth/config');
+ok('OAuth callback uses the configured public URL', oauthConfig.redirectUri === `${base}/api/cloud/oauth/callback`);
+const oauth = await json('/cloud/oauth/start', 'POST', {
+  name: 'Integration Drive OAuth',
+  provider: 'drive',
+  clientId: 'integration-oauth-client-id',
+  clientSecret: 'integration-oauth-client-secret',
+});
+const authorization = new URL(oauth.authorizationUrl);
+const oauthState = authorization.searchParams.get('state');
+const oauthDatabase = new Database(databasePath, { readonly: true });
+const oauthFlow = oauthDatabase.prepare('SELECT state_hash FROM oauth_flows WHERE connection_id=?').get(oauth.connection.id);
+const oauthCiphertext = oauthDatabase.prepare("SELECT group_concat(ciphertext,'') ciphertext FROM encrypted_secrets WHERE owner_id IN (?,(SELECT id FROM oauth_flows WHERE connection_id=?))")
+  .get(oauth.connection.id, oauth.connection.id).ciphertext;
+oauthDatabase.close();
+ok(
+  'OAuth start uses PKCE and stores only encrypted secrets and hashed state',
+  authorization.origin === 'https://accounts.google.com' &&
+    authorization.searchParams.get('code_challenge_method') === 'S256' &&
+    Boolean(authorization.searchParams.get('code_challenge')) && Boolean(oauthState) &&
+    oauthFlow.state_hash !== oauthState && !oauthCiphertext.includes('integration-oauth-client-secret'),
+);
+const deniedCallback = await fetch(`${base}/api/cloud/oauth/callback?state=${encodeURIComponent(oauthState)}&error=access_denied`, {
+  headers: { Cookie: sessionCookie }, redirect: 'manual',
+});
+ok('OAuth denial is consumed once and redirected without leaking state', deniedCallback.status === 303 && deniedCallback.headers.get('location') === `${base}/destinations?oauth=error`);
+const replayedCallback = await fetch(`${base}/api/cloud/oauth/callback?state=${encodeURIComponent(oauthState)}&error=access_denied`, {
+  headers: { Cookie: sessionCookie }, redirect: 'manual',
+});
+ok('OAuth state replay is rejected', replayedCallback.status === 400);
 const managedConnection = await json('/cloud/connections', 'POST', {
   name: 'Managed MEGA test',
   provider: 'mega',
